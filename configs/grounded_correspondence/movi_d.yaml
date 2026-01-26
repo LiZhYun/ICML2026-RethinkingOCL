@@ -1,12 +1,12 @@
 experiment_group: icml26_ocl_rethinking
-experiment_name: ytvis2021
+experiment_name: movi_d
 
 globals:
-  NUM_SLOTS: 7
-  SLOT_DIM: 64
+  NUM_SLOTS: 15
+  SLOT_DIM: 128
   DINO_MODEL: vit_base_patch14_dinov2
   FEAT_DIM: 768
-  NUM_PATCHES: 1369
+  NUM_PATCHES: 576
   NUM_GPUS: 1
   BATCH_SIZE_PER_GPU: 8
   TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
@@ -20,7 +20,8 @@ trainer:
 
 optimizer:
   name: Adam
-  lr: 0.0008
+  # Scale learning rate by batch size: take base lr once for every 32 samples
+  lr: 0.0004
   lr_scheduler:
     name: exp_decay_with_warmup
     warmup_steps: 2500
@@ -50,25 +51,20 @@ model:
       name: CycleConsistencyLoss
       pred_key: processor.cycle_slots
       target_key: processor.cycle_targets
-    # loss_entropy:
-    #   name: EntropyLoss
-    #   pred_key: processor.corrector.entropy_loss
 
   loss_weights:
     loss_featrec: 1.0
     loss_ss: 0.5
     loss_cycle: 0.0
-    # loss_entropy: 0.1
-
 
   initializer:
     name: GreedyFeatureInit # FixedLearnedInit, GreedyFeatureInit, GreedyFeatureInitV2, ClusterFeatureInit
     n_slots: ${globals.NUM_SLOTS}
     dim: ${globals.SLOT_DIM}
     saliency_mode: local_consistency  # 'norm', 'entropy', 'variance', 'pca', 'local_consistency', 'local_consistency_pca', 'local_consistency_ms', 'local_consistency_uniform', 'local_consistency_centroid', 'local_consistency_balanced', 'local_consistency_soft', 'local_consistency_density', 'local_consistency_second', 'local_consistency_gaussian'
-    neighbor_radius: 2
+    neighbor_radius: 1
     selection_mode: hard # hard, soft, neighbor_avg, knn_refine, centroid
-    refine_linear: false  # Enable learnable refinement
+    refine_linear: false  # Enable learnable refinement (V1 only)
     refine_hidden: 0
     saliency_alpha: 0.5    # Try: 0.5, 0.7, 1.0, 1.3, 1.5
     spatial_suppression_radius: 0      # 1=3x3, 2=5x5, 3=7x7
@@ -92,11 +88,13 @@ model:
     backbone:
       name: TimmExtractor
       model: ${globals.DINO_MODEL}
-      features: vit_block12
+      features:
+      - vit_block12
+      - vit_block_keys12
       frozen: true
       pretrained: true
       model_kwargs:
-        dynamic_img_size: true
+        dynamic_img_size: True
     # 3D Fourier positional embedding (optional - requires depth data)
     use_pos_embed: false
     pos_embed:
@@ -125,30 +123,9 @@ model:
   latent_processor:
     first_step_corrector_args:
       n_iters: 3
-    # TTT3R: Adaptive state update based on predictor attention (default: false)
     use_ttt3r: false
     skip_corrector: false  # Bypass slot attention, use greedy-initialized slots directly
-    skip_predictor: true  # Bypass predictor, use greedy-initialized slots directly
-    
-    # ============== MEMORY SYSTEM (Optional) ==============
-    # Uncomment the following sections to enable SAM2-style temporal memory
-    # This stores past frame information to improve temporal consistency
-    
-    # memory_encoder:
-    #   name: SlotMemoryEncoder            # Note: imported in modules/__init__.py
-    #   slot_dim: ${globals.SLOT_DIM}      # Slot feature dimension
-    #   feat_dim: ${globals.SLOT_DIM}      # Encoder feature dimension
-    #   mem_dim: ${globals.SLOT_DIM}       # Memory representation dimension
-    #   n_slots: ${globals.NUM_SLOTS}      # Number of slots per frame
-    #   fusion_blocks: 1                   # Number of transformer fusion layers
-    #   dropout: 0.0                       # Dropout rate
-    
-    # memory_bank:
-    #   name: MemoryBank                   # Note: imported in modules/__init__.py
-    #   capacity: 7                        # Max frames to store (FIFO queue)
-    #   mem_dim: ${globals.SLOT_DIM}       # Memory feature dimension
-    #   temporal_stride_eval: 1            # Temporal stride during evaluation
-    # ======================================================
+    skip_predictor: false  # Bypass predictor, use greedy-initialized slots directly
 
   decoder:
     name: MLPDecoder
@@ -158,8 +135,7 @@ model:
     n_patches: ${globals.NUM_PATCHES}
 
   predictor:
-    # Standard predictor (no memory)
-    name: networks.TransformerEncoder # networks.TransformerEncoder, networks.HungarianPredictor, networks.HungarianMemoryMatcher
+    name: networks.HungarianPredictor # networks.TransformerEncoder, networks.HungarianPredictor, networks.HungarianMemoryMatcher
     dim: ${globals.SLOT_DIM}
     n_blocks: 1
     n_heads: 4
@@ -171,25 +147,11 @@ model:
     max_slots: ${globals.NUM_SLOTS}  # Fixed registry capacity
     match_threshold: 2.0       # Cosine distance threshold for valid match (lower=stricter)
     ema_decay: 0.0             # EMA weight: new = decay*old + (1-decay)*current
-    
-    # ============== MEMORY-CONDITIONED PREDICTOR (Optional) ==============
-    # Uncomment to use memory-conditioned predictor with cross-attention
-    # NOTE: If using memory, also uncomment memory_encoder and memory_bank above
-    
-    # name: networks.MemoryConditionedTransformer
-    # dim: ${globals.SLOT_DIM}              # Slot dimension
-    # memory_dim: ${globals.SLOT_DIM}       # Memory dimension
-    # n_blocks: 1                           # Number of transformer blocks
-    # n_heads: 4                            # Number of attention heads
-    # use_memory: true                      # Enable/disable cross-attention (for ablation)
-    # dropout: 0.0                          # Dropout rate
-    # activation: relu                      # Activation function
-    # =====================================================================
 
 val_metrics:
   ari:
     name: VideoARI
-    ignore_background: false
+    ignore_background: true
     pred_key: decoder_masks_hard
     true_key: segmentations
   fg_ari:
@@ -199,54 +161,48 @@ val_metrics:
     true_key: segmentations
   image_ari:
     name: ImageARI
+    ignore_background: true
     video_input: true
-    ignore_background: false
     pred_key: decoder_masks_hard
     true_key: segmentations
   mbo:
     name: VideoIoU
     matching: overlap
-    ignore_background: false
+    ignore_background: true
     pred_key: decoder_masks_hard
     true_key: segmentations
   image_mbo:
     name: ImageIoU
     matching: overlap
+    ignore_background: true
     video_input: true
-    ignore_background: false
     pred_key: decoder_masks_hard
     true_key: segmentations
 
 dataset:
-  train_shards: "ytvis2021_resized/ytvis-train-{000000..000083}.tar"
-  val_shards: "ytvis2021_resized/ytvis-validation-{000000..000029}.tar"
+  train_shards: "movi_d/movi_d-train-{000000..000304}.tar"
+  val_shards: "movi_d/movi_d-validation-{000000..000007}.tar"
   batch_size: ${globals.BATCH_SIZE_PER_GPU}
-  val_batch_size: 1
-  val_size: 200
+  val_batch_size: 4
+  val_size: 250
   num_workers: 4
-  num_val_workers: 1
+  num_val_workers: 2
   train_pipeline:
+    video_size: 24
     chunk_size: 4
-    keys: [video]
-    # For 3D pos embed, uncomment below and comment above:
-    # keys: [video, depths, intrinsics, extrinsics]
     sample_one_chunk_per_video: true
+    keys: [video]
+    shuffle_size: 512
     transforms:
-      name: ytvis_train
+      name: movi_train
       type: video
-      crop_type: short_side_resize_random
-      input_size: 518
-      num_classes: 10
-      use_3d_pos_embed: false  # Enable camera data transforms
+      input_size: 336
+      h_flip_prob: 0.5
   val_pipeline:
     use_chunks: false
     keys: [video, segmentations]
-    # For 3D pos embed, uncomment below and comment above:
-    # keys: [video, segmentations, depths, intrinsics, extrinsics]
     transforms:
-      name: ytvis_val
+      name: movi_val
       type: video
-      crop_type: central
-      input_size: 518
-      num_classes: 25
-      use_3d_pos_embed: false  # Enable camera data transforms
+      input_size: 336
+      num_classes: 24

@@ -1,0 +1,252 @@
+experiment_group: icml26_ocl_rethinking
+experiment_name: ytvis2021
+
+globals:
+  NUM_SLOTS: 7
+  SLOT_DIM: 64
+  DINO_MODEL: vit_base_patch14_dinov2
+  FEAT_DIM: 768
+  NUM_PATCHES: 1369
+  NUM_GPUS: 1
+  BATCH_SIZE_PER_GPU: 8
+  TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
+  BASE_LR: 0.0001
+
+trainer:
+  max_steps: 100000
+  log_every_n_steps: 250
+  val_check_interval: 2500
+  gradient_clip_val: 0.05
+
+optimizer:
+  name: Adam
+  lr: 0.0008
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: ${trainer.max_steps}
+
+model:
+  input_type: video
+  visualize: false
+  visualize_every_n_steps: 10000
+  use_backbone_features: false  # Use stable DINO features for greedy init
+  temporal_cross_window: 0  # 0=same-frame cycle, 0<=temporal cross-consistency<=chunk_size-1
+  temporal_cross_mode: "both"  # or "backward" or "forward"
+  losses:
+    loss_featrec:
+      name: MSELoss
+      pred_dims:
+        - 0
+        - ${globals.FEAT_DIM}
+    loss_ss:
+      name: Slot_Slot_Contrastive_Loss
+      pred_key: processor.state
+      temperature: 0.1
+      batch_contrast: true
+      patch_inputs: false
+      keep_input_dim: true
+    loss_cycle:
+      name: CycleConsistencyLoss
+      pred_key: processor.cycle_slots
+      target_key: processor.cycle_targets
+    # loss_entropy:
+    #   name: EntropyLoss
+    #   pred_key: processor.corrector.entropy_loss
+
+  loss_weights:
+    loss_featrec: 1.0
+    loss_ss: 0.5
+    loss_cycle: 0.0
+    # loss_entropy: 0.1
+
+
+  initializer:
+    name: GreedyFeatureInit # FixedLearnedInit, GreedyFeatureInit, GreedyFeatureInitV2, ClusterFeatureInit
+    n_slots: ${globals.NUM_SLOTS}
+    dim: ${globals.SLOT_DIM}
+    saliency_mode: local_consistency  # 'norm', 'entropy', 'variance', 'pca', 'local_consistency', 'local_consistency_pca', 'local_consistency_ms', 'local_consistency_uniform', 'local_consistency_centroid', 'local_consistency_balanced', 'local_consistency_soft', 'local_consistency_density', 'local_consistency_second', 'local_consistency_gaussian'
+    neighbor_radius: 2
+    selection_mode: hard # hard, soft, neighbor_avg, knn_refine, centroid
+    refine_linear: false  # Enable learnable refinement
+    refine_hidden: 0
+    saliency_alpha: 0.5    # Try: 0.5, 0.7, 1.0, 1.3, 1.5
+    spatial_suppression_radius: 0      # 1=3x3, 2=5x5, 3=7x7
+    spatial_suppression_strength: 0.5  # 0=pure feature, 1=pure spatial
+    soft_topk: 5
+    temperature: 0.1 
+    neighbor_avg_radius: 1
+    saliency_smoothing: 0 # 0=no smoothing, 1=3x3, 2=5x5, 3=7x7, etc.
+    init_mode: per_frame  # per_frame or first_frame
+    aggregate: false           # Enable patch aggregation
+    aggregate_threshold: 0.5  # Include patches with sim > 0.5
+    # === V2-specific: Variable slot support ===
+    init_threshold: 0.0        # Early stopping threshold (0=disabled, try 0.1-0.3)
+    min_slots: 1               # Minimum slots before early stopping applies
+    # === Clustering (ClusterFeatureInit only) ===
+    cluster_method: agglomerative
+    affinity: cosine
+    linkage: average
+
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: ${globals.DINO_MODEL}
+      features: vit_block12
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: true
+    # 3D Fourier positional embedding (optional - requires depth data)
+    use_pos_embed: false
+    pos_embed:
+      name: utils.FourierPositionEmbed3D
+      dim: ${globals.FEAT_DIM}
+      patch_size: 14
+      num_bands: 64
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: ${globals.FEAT_DIM}
+      outp_dim: ${globals.SLOT_DIM}
+      hidden_dim: "${mul: ${globals.FEAT_DIM}, 2}"
+      layer_norm: true
+
+  grouper:
+    name: SlotAttention
+    inp_dim: ${globals.SLOT_DIM}
+    slot_dim: ${globals.SLOT_DIM}
+    n_iters: 2
+    use_mlp: true
+    use_gru: true
+    use_ttt: false
+    use_gated: false
+    use_ent: false
+
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+    # TTT3R: Adaptive state update based on predictor attention (default: false)
+    use_ttt3r: false
+    skip_corrector: false  # Bypass slot attention, use greedy-initialized slots directly
+    skip_predictor: false  # Bypass predictor, use greedy-initialized slots directly
+    
+    # ============== MEMORY SYSTEM (Optional) ==============
+    # Uncomment the following sections to enable SAM2-style temporal memory
+    # This stores past frame information to improve temporal consistency
+    
+    # memory_encoder:
+    #   name: SlotMemoryEncoder            # Note: imported in modules/__init__.py
+    #   slot_dim: ${globals.SLOT_DIM}      # Slot feature dimension
+    #   feat_dim: ${globals.SLOT_DIM}      # Encoder feature dimension
+    #   mem_dim: ${globals.SLOT_DIM}       # Memory representation dimension
+    #   n_slots: ${globals.NUM_SLOTS}      # Number of slots per frame
+    #   fusion_blocks: 1                   # Number of transformer fusion layers
+    #   dropout: 0.0                       # Dropout rate
+    
+    # memory_bank:
+    #   name: MemoryBank                   # Note: imported in modules/__init__.py
+    #   capacity: 7                        # Max frames to store (FIFO queue)
+    #   mem_dim: ${globals.SLOT_DIM}       # Memory feature dimension
+    #   temporal_stride_eval: 1            # Temporal stride during evaluation
+    # ======================================================
+
+  decoder:
+    name: MLPDecoder
+    inp_dim: ${globals.SLOT_DIM}
+    outp_dim: ${globals.FEAT_DIM}
+    hidden_dims: [1024, 1024, 1024]
+    n_patches: ${globals.NUM_PATCHES}
+
+  predictor:
+    # Standard predictor (no memory)
+    name: networks.TransformerEncoder # networks.TransformerEncoder, networks.HungarianPredictor, networks.HungarianMemoryMatcher
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+    use_gated: false
+    # === HungarianPredictor / HungarianMemoryMatcher options ===
+    similarity: cosine         # 'cosine' or 'l2'
+    pre_match: false           # Match BEFORE slot attention (HungarianPredictor only)
+    # === HungarianMemoryMatcher V2 options (persistent tracking) ===
+    max_slots: ${globals.NUM_SLOTS}  # Fixed registry capacity
+    match_threshold: 2.0       # Cosine distance threshold for valid match (lower=stricter)
+    ema_decay: 0.0             # EMA weight: new = decay*old + (1-decay)*current
+    
+    # ============== MEMORY-CONDITIONED PREDICTOR (Optional) ==============
+    # Uncomment to use memory-conditioned predictor with cross-attention
+    # NOTE: If using memory, also uncomment memory_encoder and memory_bank above
+    
+    # name: networks.MemoryConditionedTransformer
+    # dim: ${globals.SLOT_DIM}              # Slot dimension
+    # memory_dim: ${globals.SLOT_DIM}       # Memory dimension
+    # n_blocks: 1                           # Number of transformer blocks
+    # n_heads: 4                            # Number of attention heads
+    # use_memory: true                      # Enable/disable cross-attention (for ablation)
+    # dropout: 0.0                          # Dropout rate
+    # activation: relu                      # Activation function
+    # =====================================================================
+
+val_metrics:
+  ari:
+    name: VideoARI
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  fg_ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_ari:
+    name: ImageARI
+    video_input: true
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    video_input: true
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+
+dataset:
+  train_shards: "ytvis2021_resized/ytvis-train-{000000..000083}.tar"
+  val_shards: "ytvis2021_resized/ytvis-validation-{000000..000029}.tar"
+  batch_size: ${globals.BATCH_SIZE_PER_GPU}
+  val_batch_size: 1
+  val_size: 200
+  num_workers: 4
+  num_val_workers: 1
+  train_pipeline:
+    chunk_size: 4
+    keys: [video]
+    # For 3D pos embed, uncomment below and comment above:
+    # keys: [video, depths, intrinsics, extrinsics]
+    sample_one_chunk_per_video: true
+    transforms:
+      name: ytvis_train
+      type: video
+      crop_type: short_side_resize_random
+      input_size: 518
+      num_classes: 10
+      use_3d_pos_embed: false  # Enable camera data transforms
+  val_pipeline:
+    use_chunks: false
+    keys: [video, segmentations]
+    # For 3D pos embed, uncomment below and comment above:
+    # keys: [video, segmentations, depths, intrinsics, extrinsics]
+    transforms:
+      name: ytvis_val
+      type: video
+      crop_type: central
+      input_size: 518
+      num_classes: 25
+      use_3d_pos_embed: false  # Enable camera data transforms

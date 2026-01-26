@@ -127,7 +127,7 @@ We list the results obtained with the configs in this repository:
 
 ## Acknowledgement
 
-The codebase is adapted from [Videosaur](https://github.com/martius-lab/videosaur) and [SlotContrast](https://github.com/amazon-science/object-centric-learning-framework).
+The codebase is adapted from [Videosaur](https://github.com/martius-lab/videosaur) and [SlotContrast](https://github.com/martius-lab/slotcontrast).
 
 ## License
 
