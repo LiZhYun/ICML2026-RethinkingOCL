@@ -324,12 +324,12 @@ def main():
     )
     parser.add_argument(
         "--data-dir",
-        default="/home/zhiyuan/Codes/exp_slotcontrast/data/ytvis2021_raw/valid",
+        default="/data/ytvis2021_raw/valid",
         help="Path to validation directory (e.g., ytvis2021_raw/valid, movi_d_raw/valid, movi_e_raw/valid)"
     )
     parser.add_argument(
         "--output-dir",
-        default="/home/zhiyuan/Codes/exp_slotcontrast/data/ytvis2021_inference",
+        default="/data/ytvis2021_inference",
         help="Output directory for inference results"
     )
     parser.add_argument(

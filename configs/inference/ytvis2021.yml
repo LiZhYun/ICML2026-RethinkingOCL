@@ -2,10 +2,10 @@ checkpoint: checkpoints/t3slotcontrast_b4.ckpt
 model_config: configs/slotcontrast/ytvis2021.yaml
 n_slots: 7
 input:
-  path: /home/zhiyuan/Codes/slotcontrast/data/ytvis2021_raw/valid/videos/bfa904a786.mp4
+  path: data/ytvis2021_raw/valid/videos/bfa904a786.mp4
   type: video
   transforms:
     dataset_type: video
     input_size: 224
 output:
-  save_path: /home/zhiyuan/Codes/slotcontrast/data/ytvis2021_raw/valid/videos/t3/bfa904a786_masked.mp4
+  save_path: data/ytvis2021_raw/valid/videos/t3/bfa904a786_masked.mp4

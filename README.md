@@ -1,96 +1,135 @@
-# SlotContrast
+# Grounded Correspondence
 
-This is the code release for the paper **Temporally Consistent Object-Centric Learning by Contrasting Slots (CVPR 2025 Oral)**, by Anna Manasyan, Maximilian Seitzer, Filip Radovic, Georg Martius, Andrii Zadaianchuk.
+This is the code release for the paper **Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence (ICML 2026)**, by [Anonymous Authors].
 
-- [Webpage](https://slotcontrast.github.io/)
-- [Arxiv](https://arxiv.org/abs/2412.14295)
-
-![slot-slot contrastive loss](loss_figure.png)
+- [Paper](link_to_arxiv)
 
 ## Summary
 
-Unsupervised object-centric learning from videos is a promising approach to extract structured representations from large, unlabeled collections of videos. To support downstream tasks like autonomous control, these representations must be both compositional and temporally consistent. Existing approaches based on recurrent processing often lack long-term stability across frames because their training objective does not enforce temporal consistency. In this work, we introduce a novel object-level temporal contrastive loss for video object-centric models that explicitly promotes temporal consistency. Our method significantly improves the temporal consistency of the learned object-centric representations, yielding more reliable video decompositions that facilitate challenging downstream tasks such as unsupervised object dynamics prediction. Furthermore, the inductive bias added by our loss strongly improves object discovery, leading to state-of-the-art results on both synthetic and real-world datasets, outperforming even weakly-supervised methods that leverage motion masks as additional cues.
+The de facto approach in video object-centric learning maintains temporal consistency through learned dynamics modules that predict future slot states. We demonstrate that these predictors function as expensive approximations of discrete correspondence problems. Modern self-supervised vision backbones already encode instance-discriminative features that distinguish objects reliably. Exploiting these features eliminates the need for learned temporal prediction. 
+
+We introduce **Grounded Correspondence**, a framework that replaces parametric transitioners with deterministic discrete optimization. Slots initialize from saliency peaks in frozen DINOv2 backbone features. Frame-to-frame identity is maintained through Hungarian matching on slot representations. The approach requires **zero learnable parameters** for temporal modeling yet achieves competitive performance on MOVi-D, MOVi-E, and YouTube-VIS.
 
 ## Usage
 
 ### Setup
 
-First, setup the python environment setup. We use [Poetry](https://python-poetry.org/) for this:
-
-```
+First, setup the python environment. We use [Poetry](https://python-poetry.org/):
+```bash
 poetry install
 ```
+
 ### Install Options
 
-- `poetry install -E tensorflow` to be able to convert tensorflow datasets
-- `poetry install -E coco` to use coco API
+- `poetry install -E tensorflow` to convert tensorflow datasets
+- `poetry install -E coco` to use COCO API
 - `poetry install -E notebook` to use jupyter notebook and matplotlib
 
-Then you could run a test configuration to see if everything works:
-
-```
+Test the installation:
+```bash
 poetry run python -m slotcontrast.train tests/configs/test_dummy_image.yml
 ```
 
-Second, to download the datasets used in this work, follow the instructions in [data/README.md](data/README.md).
-By default, datasets are expected to be contained in the folder `./data`.
-You can change this to the actual folder your data is in by setting the environment variable `SLOTCONTRAST_DATA_PATH`, or by running `train.py` with the `--data-dir` option.
+### Data
+
+Follow the instructions in [data/README.md](data/README.md) to download the datasets.
+By default, datasets are expected in `./data`. You can change this by setting the environment variable `SLOTCONTRAST_DATA_PATH` or using the `--data-dir` option.
 
 ### Training
 
-Run one of the configurations in `configs/slotcontrast`, for example:
-
+Train on MOVi-D:
+```bash
+poetry run python -m slotcontrast.train configs/grounded_correspondence/movi_d.yaml \
+    --data-dir ./data \
+    --log-dir ./logs
 ```
-poetry run python -m slotcontrast.train configs/slotcontrast/movi_c.yml
+
+Train on MOVi-E:
+```bash
+poetry run python -m slotcontrast.train configs/grounded_correspondence/movi_e.yaml \
+    --data-dir ./data \
+    --log-dir ./logs
 ```
 
-The results are stored in a folder created under the log root folder (by defaults `./logs`, changeable by the argument `--log-dir`).
-If you want to continue training from a previous run, you can use the `--continue` argument, like in the following command:
-
+Train on YouTube-VIS 2021:
+```bash
+poetry run python -m slotcontrast.train configs/grounded_correspondence/ytvis2021.yaml \
+    --data-dir ./data \
+    --log-dir ./logs
 ```
-poetry run python -m slotcontrast.train --continue <path_to_log_dir_or_checkpoint_file> configs/slotcontrast/movi_c.yml
+
+To continue training from a checkpoint:
+```bash
+poetry run python -m slotcontrast.train --continue <path_to_checkpoint> configs/grounded_correspondence/movi_d.yaml
 ```
 
 ### Inference
-If you want to run one of the released checkpoints (see below) on your own video you can use inference script with corresponding config file:
 
+Run inference on your own videos:
+```bash
+poetry run python -m slotcontrast.inference --config configs/inference/movi_d_gc.yaml
 ```
-poetry run python -m slotcontrast.inference --config configs/inference/movi_c.yml
+
+Update `checkpoint: path/to/checkpoint.ckpt` in the config to point to your checkpoint.
+
+For MOVi datasets (visualization only):
+```bash
+python data/batch_inference.py \
+    --checkpoint checkpoints/GC_movid/checkpoints/step=100000-v1.ckpt \
+    --config configs/inference/movi_d_gc.yaml \
+    --data-dir data/movi_d_raw/valid \
+    --output-dir data/inference_results \
+    --n-slots 15 \
+    --device cuda
 ```
-in the released config, please change `checkpoint: path/to/slotcontrast-movi-c.ckpt` to the real path to your checkpoint.
-For different video formats you would need to modify corresponding transformations in `build_inference_transform` function.
+
+For YouTube-VIS (with metrics):
+```bash
+python data/batch_inference.py \
+    --checkpoint checkpoints/GC_ytvis/checkpoints/step=100000-v1.ckpt \
+    --config configs/inference/ytvis2021_gc.yaml \
+    --data-dir data/ytvis2021_raw/valid \
+    --output-dir data/inference_results \
+    --n-slots 7 \
+    --device cuda
+```
 
 ## Results
 
-### SlotContrast
+We list the results obtained with the configs in this repository:
 
-We list the results you should roughly be able to obtain with the configs included in this repository:
+| Dataset      | Model Variant    | Video FG-ARI | Video mBO | Config                      | Checkpoint Link |
+|--------------|------------------|--------------|-----------|-----------------------------|-------------------------------------------------|
+| MOVi-D       | ViT-B/14, DINOv2 | 73.7         | 28.4      | grounded_correspondence/movi_d.yaml | [Checkpoint](link) |
+| MOVi-E       | ViT-B/14, DINOv2 | 75.7         | 23.4      | grounded_correspondence/movi_e.yaml | [Checkpoint](link) |
+| YT-VIS 2021  | ViT-B/14, DINOv2 | 33.1         | 29.3      | grounded_correspondence/ytvis2021.yaml | [Checkpoint](link) |
 
-| Dataset      | Model Variant    | Video ARI | Video mBO | Config                      | Checkpoint Link                                                                                             |
-|--------------|------------------|-----------|-----------|-----------------------------|------------------------------------------------------------------------------------------------------------|
-| MOVi-C       | ViT-S/14, DINOv2    |  69.3    |  32.7     | slotcontrast/movi_c.yml        | [Checkpoint](https://huggingface.co/annamanasyan/slotcontrast/resolve/main/movi_c.ckpt) |
-| MOVi-E       | ViT-B/14, DINOv2    | 82.9      | 29.2     | slotcontrast/movi_e.yml        | [Checkpoint](https://huggingface.co/annamanasyan/slotcontrast/resolve/main/movi_e.ckpt) |
-| YT-VIS 2021  | ViT-B/14, DINOv2   | 38.0      | 33.7      | slotcontrast/ytvis2021.yml         | [Checkpoint](https://huggingface.co/annamanasyan/slotcontrast/resolve/main/ytvis.ckpt)   |
-|
+**Key hyperparameters:**
+- **MOVi-D/E**: 15 slots, Grounded Saliency with α=0.5 (D) or α=1.0 (E), spatial radius r=1
+- **YouTube-VIS**: 7 slots, Grounded Saliency with α=0.5, spatial radius r=2
+- **Temporal**: Hungarian matching (zero learnable parameters)
 
+## Method Overview
+
+**Grounded Saliency Initialization**: Slots are initialized from saliency peaks in frozen DINOv2 features using local-global consistency metric: `S_i = L_i - α·G_i`, where `L_i` measures local instance consistency and `G_i` suppresses background.
+
+**Hungarian Correspondence**: Frame-to-frame identity is maintained through optimal bipartite matching on slot features using the Hungarian algorithm, requiring no learned temporal parameters.
 
 ## Citation
-
-```
- @inproceedings{manasyan2025temporally,
-        title={Temporally Consistent Object-Centric Learning by Contrasting Slots},
-        author={Manasyan, Anna and Seitzer, Maximilian and Radovic, Filip and Martius, Georg and Zadaianchuk, Andrii},
-        booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
-        year={2025}
-      } 
+```bibtex
+@inproceedings{anonymous2026rethinking,
+    title={Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence},
+    author={Anonymous Authors},
+    booktitle={International Conference on Machine Learning (ICML)},
+    year={2026}
+}
 ```
 
 ## Acknowledgement
-The codebase is adapted from [Videosaur](https://github.com/martius-lab/videosaur)
+
+The codebase is adapted from [Videosaur](https://github.com/martius-lab/videosaur) and [SlotContrast](https://github.com/amazon-science/object-centric-learning-framework).
 
 ## License
 
 This codebase is released under the MIT license.
-Some parts of the codebase were adapted from other codebases.
-A comment was added to the code where this is the case.
-Those parts are governed by their respective licenses.
+Some parts were adapted from other codebases and are governed by their respective licenses.

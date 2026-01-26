@@ -4,13 +4,13 @@
 echo "Extracting MOVI-D validation data..."
 python data/extract_movi_validation.py \
     --dataset movi_d \
-    --data-dir /home/zhiyuan/Codes/exp_slotcontrast/data
+    --data-dir /data
 
 # Extract MOVI-E validation data
 echo "Extracting MOVI-E validation data..."
 python data/extract_movi_validation.py \
     --dataset movi_e \
-    --data-dir /home/zhiyuan/Codes/exp_slotcontrast/data
+    --data-dir /data
 
 echo "Done! Extracted data to:"
 echo "  - data/movi_d_raw/valid/JPEGImages/"

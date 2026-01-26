@@ -115,7 +115,7 @@ def main():
     )
     parser.add_argument(
         "--data-dir",
-        default="/home/zhiyuan/Codes/exp_slotcontrast/data",
+        default="/data",
         help="Path to data directory containing tar files"
     )
     parser.add_argument(
