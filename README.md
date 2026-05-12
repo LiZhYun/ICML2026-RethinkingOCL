@@ -1,8 +1,8 @@
 # Grounded Correspondence
 
-This is the code release for the paper **Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence (ICML 2026)**, by [Anonymous Authors].
+This is the code release for the paper **Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence (ICML 2026)**.
 
-- [Paper](link_to_arxiv)
+- [Paper](https://arxiv.org/abs/2605.03650)
 
 ## Summary
 
@@ -117,11 +117,14 @@ We list the results obtained with the configs in this repository:
 
 ## Citation
 ```bibtex
-@inproceedings{anonymous2026rethinking,
-    title={Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence},
-    author={Anonymous Authors},
-    booktitle={International Conference on Machine Learning (ICML)},
-    year={2026}
+@misc{li2026rethinkingtemporalconsistencyvideo,
+      title={Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence}, 
+      author={Zhiyuan Li and Rongzhen Zhao and Wenyan Yang and Wenshuai Zhao and Pekka Marttinen and Joni Pajarinen},
+      year={2026},
+      eprint={2605.03650},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2605.03650}, 
 }
 ```
 
