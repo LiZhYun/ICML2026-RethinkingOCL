@@ -1,0 +1,24 @@
+# Round-32 fairness audit — full-schedule frozen baseline at 100K.
+#
+# Same as frozen_15k.yaml (no LoRA, no target_encoder, no R3 unfreeze),
+# but at the published 100K convergence schedule for strict step-aligned
+# comparison with treatment runs at 100K.
+trainer:
+  max_steps: 100000
+optimizer:
+  param_groups: null
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 100000
+model:
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+  target_encoder: null
+  target_encoder_input: null
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0

@@ -975,3 +975,335 @@ def _check_shape(x: torch.Tensor, expected_shape: Sequence[Optional[int]], name:
         j is not None and i != j for i, j in zip(shape, expected_shape)
     ):
         raise ValueError(f"Input {name} has shape {shape}, but expected {expected_shape}.")
+
+
+# ---------------------------------------------------------------------------
+# HOTA (Higher Order Tracking Accuracy) / AssA / DetA
+# ---------------------------------------------------------------------------
+# Reference:
+#   Luiten et al., "HOTA: A Higher Order Metric for Evaluating Multi-Object
+#   Tracking", IJCV 2021 (PMC7881978).
+#
+# This is a minimal, self-contained implementation that operates on
+# per-video one-hot slot masks (predicted) and per-video one-hot GT masks
+# and produces identity-aware tracking scores. It matches the structure of
+# the official TrackEval reference implementation (averaging over
+# localisation thresholds alpha in 0.05..0.95), but is written from scratch
+# here because TrackEval is not available in the project environment.
+# ---------------------------------------------------------------------------
+
+
+class HigherOrderTrackingAccuracy(Metric):
+    """Abstract HOTA / AssA / DetA metric.
+
+    The metric is accumulated on a per-video basis. ``compute`` returns a
+    dict with three scalars (``hota``, ``deta``, ``assa``) so the existing
+    logging machinery (see :class:`JandFMetric`) emits
+    ``val/<metric_name>/{hota,deta,assa}``.
+    """
+
+    higher_is_better = True
+    full_state_update = False
+
+    # Same alpha grid as the official TrackEval HOTA reference:
+    # 0.05, 0.10, ..., 0.95 (19 thresholds).
+    _DEFAULT_ALPHAS: Tuple[float, ...] = tuple(round(0.05 * i, 2) for i in range(1, 20))
+
+    def __init__(
+        self,
+        ignore_background: bool = False,
+        ignore_overlaps: bool = False,
+        alphas: Optional[Sequence[float]] = None,
+        pred_key: Optional[str] = None,
+        true_key: Optional[str] = None,
+    ):
+        super().__init__(input_mapping={"pred_mask": pred_key, "true_mask": true_key})
+        self.ignore_background = ignore_background
+        self.ignore_overlaps = ignore_overlaps
+        self.alphas = tuple(alphas) if alphas is not None else self._DEFAULT_ALPHAS
+        n = len(self.alphas)
+        # State: one running scalar per alpha for HOTA, DetA, AssA, plus a
+        # count of videos contributing. We reduce by summation over DDP then
+        # normalise in ``compute``.
+        self.add_state(
+            "hota_sum",
+            default=torch.zeros(n, dtype=torch.float64),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "deta_sum",
+            default=torch.zeros(n, dtype=torch.float64),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "assa_sum",
+            default=torch.zeros(n, dtype=torch.float64),
+            dist_reduce_fx="sum",
+        )
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    # ``_update`` is called with shape (batch, n_frames, n_true/pred_classes,
+    # height, width) - see the per-video mixin below, which enforces this.
+    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor):
+        assert true_mask.ndim == 5 and pred_mask.ndim == 5
+        if torch.any((true_mask != 0.0) & (true_mask != 1.0)):
+            raise ValueError("`true_mask` is not binary")
+        if torch.any((pred_mask != 0.0) & (pred_mask != 1.0)):
+            raise ValueError("`pred_mask` is not binary")
+        if torch.any(pred_mask.sum(dim=2) != 1.0):
+            raise ValueError("`pred_mask` is not one-hot")
+
+        n_true_classes_per_point = true_mask.sum(dim=2)
+        if not self.ignore_overlaps and torch.any(n_true_classes_per_point > 1.0):
+            raise ValueError("There are overlaps in `true_mask`.")
+        if self.ignore_overlaps:
+            overlaps = n_true_classes_per_point > 1.0
+            true_mask = true_mask.clone()
+            m = einops.repeat(overlaps, "b t h w -> b t c h w", c=true_mask.shape[2])
+            true_mask[m] = 0.0
+            pred_mask = pred_mask.clone()
+            m = einops.repeat(overlaps, "b t h w -> b t k h w", k=pred_mask.shape[2])
+            pred_mask[m] = 0.0
+
+        if self.ignore_background:
+            true_mask = true_mask[:, :, 1:]
+
+        batch_size = true_mask.shape[0]
+        for b in range(batch_size):
+            # Skip videos without any ground truth (matches behaviour of
+            # ARI/IoU metrics above).
+            if true_mask[b].sum() == 0:
+                continue
+            scores = _video_hota_scores(
+                true_mask[b].to(torch.bool),
+                pred_mask[b].to(torch.bool),
+                self.alphas,
+            )
+            if scores is None:
+                continue
+            hota_a, deta_a, assa_a = scores
+            self.hota_sum += hota_a
+            self.deta_sum += deta_a
+            self.assa_sum += assa_a
+            self.total += 1
+
+    def compute(self):
+        total = self.total.clamp(min=1)
+        hota_per_alpha = self.hota_sum / total
+        deta_per_alpha = self.deta_sum / total
+        assa_per_alpha = self.assa_sum / total
+        return {
+            "hota": hota_per_alpha.mean(),
+            "deta": deta_per_alpha.mean(),
+            "assa": assa_per_alpha.mean(),
+        }
+
+
+class VideoHOTA(HigherOrderTrackingAccuracy):
+    """HOTA metric for videos.
+
+    Inputs to metric:
+        true_mask: Binary true masks of shape (batch, n_frames, n_true_classes, height, width).
+        pred_mask: One-hot predicted masks of shape (batch, n_frames, n_pred_classes, height,
+            width).
+
+    Args:
+        ignore_background: If true, assume first channel of true masks is background to ignore.
+        ignore_overlaps: If true, ignore pixels from overlapping ground-truth instances.
+        alphas: Sequence of IoU thresholds to integrate over. Defaults to
+            the TrackEval reference grid (0.05, 0.10, ..., 0.95).
+    """
+
+    def __init__(
+        self,
+        ignore_background: bool = False,
+        ignore_overlaps: bool = False,
+        alphas: Optional[Sequence[float]] = None,
+        pred_key: Optional[str] = None,
+        true_key: Optional[str] = None,
+    ):
+        super().__init__(
+            ignore_background=ignore_background,
+            ignore_overlaps=ignore_overlaps,
+            alphas=alphas,
+            pred_key=pred_key,
+            true_key=true_key,
+        )
+
+
+class VideoAssA(HigherOrderTrackingAccuracy):
+    """AssA (association accuracy) sub-component of HOTA for videos.
+
+    Returns only the association accuracy as a scalar so it can be logged
+    as a single number. ``VideoHOTA`` already exposes AssA as a sub-key,
+    so this class is primarily a convenience for configs that want AssA
+    alone.
+    """
+
+    def compute(self):
+        total = self.total.clamp(min=1)
+        return (self.assa_sum / total).mean()
+
+
+def _video_hota_scores(
+    true_mask: torch.Tensor,
+    pred_mask: torch.Tensor,
+    alphas: Sequence[float],
+) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Compute HOTA / DetA / AssA for a single video across alphas.
+
+    Args:
+        true_mask: bool tensor of shape (n_frames, n_true_classes, h, w).
+            Non-present GT tracks are simply all-zero along their channel.
+        pred_mask: bool tensor of shape (n_frames, n_pred_classes, h, w),
+            one-hot per pixel.
+        alphas: sequence of IoU thresholds.
+
+    Returns:
+        Tuple of (hota, deta, assa), each of shape (len(alphas),), or None
+        if the video is empty.
+    """
+    import scipy.optimize
+
+    device = true_mask.device
+    n_frames, n_true, h, w = true_mask.shape
+    _, n_pred, _, _ = pred_mask.shape
+
+    # Identify which GT / pred tracks are actually active anywhere in this
+    # video. A track that never appears should not contribute to the
+    # detection / association counts.
+    true_flat = true_mask.reshape(n_frames, n_true, -1)  # (T, C, HW)
+    pred_flat = pred_mask.reshape(n_frames, n_pred, -1)  # (T, K, HW)
+
+    true_area_per_frame = true_flat.sum(-1).to(torch.float64)  # (T, C)
+    pred_area_per_frame = pred_flat.sum(-1).to(torch.float64)  # (T, K)
+
+    gt_active = true_area_per_frame.sum(0) > 0  # (C,)
+    pred_active = pred_area_per_frame.sum(0) > 0  # (K,)
+    if not torch.any(gt_active):
+        return None
+    n_true_active = int(gt_active.sum().item())
+    n_pred_active = int(pred_active.sum().item())
+    if n_pred_active == 0:
+        # All GT tracks are FNs; every alpha scores 0.
+        zeros = torch.zeros(len(alphas), dtype=torch.float64, device=device)
+        return zeros, zeros, zeros
+
+    true_idx_map = torch.nonzero(gt_active, as_tuple=False).flatten()
+    pred_idx_map = torch.nonzero(pred_active, as_tuple=False).flatten()
+
+    true_flat = true_flat[:, true_idx_map]  # (T, C', HW)
+    pred_flat = pred_flat[:, pred_idx_map]  # (T, K', HW)
+    true_area_per_frame = true_area_per_frame[:, true_idx_map]
+    pred_area_per_frame = pred_area_per_frame[:, pred_idx_map]
+
+    # Per-frame pairwise IoU. Computed once and reused for all alphas.
+    # intersect[t, c, k] = |GT_c ∩ PR_k| in frame t.
+    intersect = torch.einsum(
+        "tcp,tkp->tck", true_flat.to(torch.float64), pred_flat.to(torch.float64)
+    )  # (T, C', K')
+    union = (
+        true_area_per_frame.unsqueeze(-1)
+        + pred_area_per_frame.unsqueeze(-2)
+        - intersect
+    )
+    per_frame_iou = torch.where(union > 0, intersect / union, torch.zeros_like(union))
+
+    # "Potential matches" across the whole video, used as a tie-break /
+    # weighting term inside the Hungarian cost (matches TrackEval).
+    # potential[c,k] = sum_t intersect[t,c,k] / max(gt_area_total[c], pr_area_total[k])
+    gt_total = true_area_per_frame.sum(0)  # (C',)
+    pr_total = pred_area_per_frame.sum(0)  # (K',)
+    intersect_total = intersect.sum(0)  # (C', K')
+    denom_total = torch.maximum(gt_total.unsqueeze(-1), pr_total.unsqueeze(-2))
+    potential = torch.where(
+        denom_total > 0,
+        intersect_total / denom_total,
+        torch.zeros_like(denom_total),
+    )
+    potential_np = potential.detach().cpu().numpy()
+
+    per_frame_iou_np = per_frame_iou.detach().cpu().numpy()
+    gt_presence = (true_area_per_frame > 0).detach().cpu().numpy()
+    pr_presence = (pred_area_per_frame > 0).detach().cpu().numpy()
+
+    hota_out = torch.zeros(len(alphas), dtype=torch.float64, device=device)
+    deta_out = torch.zeros(len(alphas), dtype=torch.float64, device=device)
+    assa_out = torch.zeros(len(alphas), dtype=torch.float64, device=device)
+
+    # GT and pred frame counts (for FNA / FPA computation).
+    gt_presence_count = gt_presence.sum(axis=0).astype(np.float64)  # (C',)
+    pr_presence_count = pr_presence.sum(axis=0).astype(np.float64)  # (K',)
+
+    for a_idx, alpha in enumerate(alphas):
+        # Per-frame bipartite matching at the given alpha. Cost matrix is
+        # -(1000 * IoU_valid + potential): IoU dominates the assignment,
+        # potential breaks ties across frames so that a pred track tends
+        # to stay bound to the same GT track when multiple are equally
+        # matchable. Pairs below the alpha threshold are also retained in
+        # the cost matrix (so Hungarian still runs) but filtered out of
+        # the matches set afterwards.
+        tp = 0
+        tpa = np.zeros((n_true_active, n_pred_active), dtype=np.float64)
+        match_count_gt = np.zeros(n_true_active, dtype=np.float64)
+        match_count_pr = np.zeros(n_pred_active, dtype=np.float64)
+        for t in range(n_frames):
+            gt_here = np.where(gt_presence[t])[0]
+            pr_here = np.where(pr_presence[t])[0]
+            if gt_here.size == 0 or pr_here.size == 0:
+                continue
+            iou_t = per_frame_iou_np[t][np.ix_(gt_here, pr_here)]  # (g, p)
+            score = 1000.0 * (iou_t >= alpha).astype(np.float64) * iou_t
+            score = score + potential_np[np.ix_(gt_here, pr_here)]
+            # Maximise score  -> minimise negative score.
+            row_ind, col_ind = scipy.optimize.linear_sum_assignment(-score)
+            for r, c in zip(row_ind, col_ind):
+                if iou_t[r, c] < alpha:
+                    continue
+                g = int(gt_here[r])
+                p = int(pr_here[c])
+                tp += 1
+                tpa[g, p] += 1.0
+                match_count_gt[g] += 1.0
+                match_count_pr[p] += 1.0
+
+        fn = int(gt_presence_count.sum() - tp)
+        fp = int(pr_presence_count.sum() - tp)
+
+        # Detection accuracy at alpha.
+        det_denom = tp + fn + fp
+        deta = tp / det_denom if det_denom > 0 else 0.0
+
+        # Association accuracy at alpha: average over TPs of
+        # TPA / (TPA + FNA + FPA), where FNA/FPA are derived from global
+        # match counts per GT and per pred track.
+        if tp == 0:
+            assa = 0.0
+        else:
+            # Vectorised accumulation: for each (g, p) with tpa > 0,
+            # FNA[g,p] = match_count_gt[g] - tpa[g,p]
+            # FPA[g,p] = match_count_pr[p] - tpa[g,p]
+            # contribution = tpa[g,p] * tpa[g,p] / (tpa[g,p] + FNA + FPA)
+            #              = tpa[g,p]^2 / (match_count_gt[g] + match_count_pr[p] - tpa[g,p])
+            mask_gp = tpa > 0
+            if not mask_gp.any():
+                assa = 0.0
+            else:
+                denom_gp = (
+                    match_count_gt[:, None]
+                    + match_count_pr[None, :]
+                    - tpa
+                )
+                contribution = np.where(
+                    (mask_gp) & (denom_gp > 0),
+                    (tpa ** 2) / np.maximum(denom_gp, 1e-12),
+                    0.0,
+                )
+                assa = contribution.sum() / tp
+
+        hota = math.sqrt(max(deta, 0.0) * max(assa, 0.0))
+        hota_out[a_idx] = hota
+        deta_out[a_idx] = deta
+        assa_out[a_idx] = assa
+
+    return hota_out, deta_out, assa_out

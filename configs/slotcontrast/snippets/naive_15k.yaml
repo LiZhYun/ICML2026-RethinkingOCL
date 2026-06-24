@@ -1,0 +1,16 @@
+# Naive LoRA-only override (T1d "no R-mechanism" cell).
+# LoRA backbone trains from step 0 at single LR (no R1 split, no R2 target,
+# no R3 unfreeze). Inherits optimizer.lr from base config.
+optimizer:
+  param_groups: null
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 15000
+model:
+  target_encoder: null
+  target_encoder_input: null
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0

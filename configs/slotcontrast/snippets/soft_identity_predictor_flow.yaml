@@ -1,0 +1,30 @@
+# Round-24 follow-on (codex Round-4 prescription):
+# SoftIdentityPredictor with the FULL prescription enabled (cosine + flow-warped IoU).
+# Differs from soft_identity_predictor.yaml by:
+#   1) Sets `use_flow_iou: true`, `flow_iou_weight: 1.0` so the soft IoU between
+#      flow-warped previous masks and current masks contributes to the affinity
+#      that drives Sinkhorn.
+#   2) Plumbs `forward_flow` into the dataset pipeline keys (MOVi-C/D/E ship
+#      Kubric GT flow inside the tar shards; YT-VIS uses RAFT cache via
+#      `dataset.flow_cache_dir` set elsewhere).
+#
+# REQUIRES: dataset must produce a `forward_flow` tensor. For MOVi-C/D/E the
+# tar shards already contain `forward_flow.npy` per video; we just need the
+# pipeline keys updated below. For YT-VIS, additionally set
+# `dataset.flow_cache_dir` to the RAFT precompute output directory.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    flow_iou_weight: 1.0
+    use_flow_iou: true
+dataset:
+  train_pipeline:
+    keys: [video, forward_flow]
+  val_pipeline:
+    keys: [video, segmentations, forward_flow]

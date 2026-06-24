@@ -1,0 +1,26 @@
+# Round-32 fairness audit: SC YT-VIS frozen at 20K matching treatment schedule.
+#
+# The SC YT-VIS ST-SoftIdent+fr15 treatment runs at max_steps=20000 with
+# decay_steps=15000 (15K active training + 5K near-zero-LR anneal).
+# To close the F1 step-mismatch fairness gap for oral, the frozen baseline
+# must run at the SAME schedule (mx=20000, decay_steps=15000) so the comparison
+# is step-aligned AND schedule-aligned.
+trainer:
+  max_steps: 20000
+optimizer:
+  param_groups: null
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 15000
+model:
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+  target_encoder: null
+  target_encoder_input: null
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0

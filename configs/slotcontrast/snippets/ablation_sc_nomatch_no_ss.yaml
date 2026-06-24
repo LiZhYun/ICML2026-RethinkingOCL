@@ -1,0 +1,8 @@
+# D1-light: SC + nomatch (skip_predictor) + LoRA + featrec=1.5 + NO slot-slot contrastive
+# This is the critical test: with NO predictor AND NO contrastive loss, does SC collapse like GCv1?
+model:
+  latent_processor:
+    skip_predictor: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.0

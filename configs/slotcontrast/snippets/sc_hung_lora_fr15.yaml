@@ -1,0 +1,20 @@
+# SlotContrast architecture + Hungarian predictor + LoRA + featrec=1.5.
+# Closes the cross-arch reviewer attack on Hungarian: "you tested it only
+# on GC; how do we know it generalizes?". Holds SC's first_frame init +
+# slot-slot contrastive loss intact, only the predictor differs from
+# SC + ST-SoftIdent + fr15 (the SC headline recipe).
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.HungarianPredictor
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+    use_gated: false
+    similarity: cosine
+    pre_match: false
+    max_slots: ${globals.NUM_SLOTS}
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

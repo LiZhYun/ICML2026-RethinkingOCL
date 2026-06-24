@@ -1,4 +1,4 @@
-experiment_group: icml26_ocl_rethinking
+experiment_group: video-ocl
 experiment_name: movi_c
 
 globals:
@@ -11,6 +11,9 @@ globals:
   BATCH_SIZE_PER_GPU: 8
   TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
   BASE_LR: 0.0001
+  # === VideoSAUR baseline (uncomment when running VideoSAUR) ===
+  # SIM_TEMP: 0.075
+  # SIM_WEIGHT: 0.1
 
 trainer:
   max_steps: 100000
@@ -30,6 +33,7 @@ model:
   input_type: video
   visualize: false
   visualize_every_n_steps: 10000
+  # ============== SlotContrast losses (default) ==============
   losses:
     loss_featrec:
       name: MSELoss
@@ -53,8 +57,33 @@ model:
     loss_ss: 0.5
     loss_cycle: 0.0
 
+  # ============== VideoSAUR losses (uncomment to use, comment out above) ==============
+  # Uses temporal patch-level feature similarity instead of slot-level contrastive loss.
+  # Requires SlotMixerDecoder (see decoder section below).
+  # losses:
+  #   loss_featrec:
+  #     name: MSELoss
+  #     pred_dims:
+  #       - 0
+  #       - ${globals.FEAT_DIM}
+  #   loss_timesim:
+  #     name: CrossEntropyLoss
+  #     target_key: encoder.vit_block_keys12
+  #     remove_last_n_frames: 1
+  #     pred_dims:
+  #       - ${globals.FEAT_DIM}
+  #       - "${add: ${globals.FEAT_DIM}, ${globals.NUM_PATCHES}}"
+  #     target_transform:
+  #       name: utils.FeatureTimeSimilarity
+  #       softmax: true
+  #       temperature: ${globals.SIM_TEMP}
+  #       threshold: 0.0
+  # loss_weights:
+  #   loss_featrec: 1.0
+  #   loss_timesim: ${globals.SIM_WEIGHT}
+
   initializer:
-    name: FixedLearnedInit # FixedLearnedInit, GreedyFeatureInit, GreedyFeatureInitV2, ClusterFeatureInit
+    name: FixedLearnedInit # FixedLearnedInit, GreedyFeatureInit, GreedyFeatureInitV2, ClusterFeatureInit, RandomInit (VideoSAUR)
     n_slots: ${globals.NUM_SLOTS}
     dim: ${globals.SLOT_DIM}
     saliency_mode: local_consistency  # 'norm', 'entropy', 'variance', 'pca', 'local_consistency', 'local_consistency_pca', 'local_consistency_ms', 'local_consistency_uniform', 'local_consistency_centroid', 'local_consistency_balanced', 'local_consistency_soft', 'local_consistency_density', 'local_consistency_second', 'local_consistency_gaussian'
@@ -110,8 +139,8 @@ model:
     inp_dim: ${globals.SLOT_DIM}
     slot_dim: ${globals.SLOT_DIM}
     n_iters: 2
-    use_mlp: true
-    use_gru: true
+    use_mlp: true   # VideoSAUR: false
+    use_gru: true   # VideoSAUR: false
     use_ttt: false
     use_gated: false
     use_ent: false
@@ -123,12 +152,38 @@ model:
     skip_corrector: false  # Bypass slot attention, use greedy-initialized slots directly
     skip_predictor: false  # Bypass predictor, use greedy-initialized slots directly
 
+  # ============== SlotContrast decoder (default) ==============
   decoder:
     name: MLPDecoder
     inp_dim: ${globals.SLOT_DIM}
     outp_dim: ${globals.FEAT_DIM}
     hidden_dims: [1024, 1024, 1024]
     n_patches: ${globals.NUM_PATCHES}
+
+  # ============== VideoSAUR decoder (uncomment to use, comment out above) ==============
+  # SlotMixerDecoder outputs FEAT_DIM + NUM_PATCHES dims: first FEAT_DIM for MSE recon,
+  # last NUM_PATCHES for temporal similarity prediction.
+  # decoder:
+  #   name: SlotMixerDecoder
+  #   inp_dim: ${globals.SLOT_DIM}
+  #   embed_dim: ${globals.SLOT_DIM}
+  #   outp_dim: "${add: ${globals.FEAT_DIM}, ${globals.NUM_PATCHES}}"
+  #   n_patches: ${globals.NUM_PATCHES}
+  #   allocator:
+  #     name: TransformerEncoder
+  #     dim: ${globals.SLOT_DIM}
+  #     memory_dim: ${globals.SLOT_DIM}
+  #     n_blocks: 2
+  #     n_heads: 4
+  #   renderer:
+  #     name: MLP
+  #     inp_dim: ${globals.SLOT_DIM}
+  #     outp_dim: 1024
+  #     hidden_dims: [1024, 1024, 1024]
+  #     final_activation: true
+  #   renderer_dim: 1024
+  #   use_layer_norms: true
+  #   pos_embed_mode: add
 
   predictor:
     name: networks.TransformerEncoder # networks.TransformerEncoder, networks.HungarianPredictor, networks.HungarianMemoryMatcher

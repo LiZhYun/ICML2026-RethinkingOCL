@@ -9,7 +9,7 @@ authors = [
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "~3.10"
+python = "~3.11"
 numpy = "^1.23.3"
 torch = "^1.13.0"
 torchvision = "^0.14.0"

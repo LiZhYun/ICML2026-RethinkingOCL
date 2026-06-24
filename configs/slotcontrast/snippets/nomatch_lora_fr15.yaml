@@ -1,0 +1,17 @@
+# Round-27 Wave 3: Claim-3 strict ablation — nomatch + LoRA + featrec=1.5.
+#
+# Tests whether the fr15 anchor (which rescued Hungarian+LoRA on MOVi-D/E)
+# can also rescue the strict no-matching variant where skip_predictor=true.
+#
+# Decision rule:
+#   - If nomatch+fr15 reaches >=3/4 universal datasets: matching is incidental,
+#     fr15 alone is the universal lever. Headline reframes to LoRA+fr15 recipe.
+#   - If nomatch+fr15 stays <=2/4 universal datasets: matching IS necessary;
+#     ST-SoftIdent is the universal differentiable-matching predictor that
+#     bridges where Hungarian fails (MOVi-C). Defensible plug-in claim.
+model:
+  latent_processor:
+    skip_predictor: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

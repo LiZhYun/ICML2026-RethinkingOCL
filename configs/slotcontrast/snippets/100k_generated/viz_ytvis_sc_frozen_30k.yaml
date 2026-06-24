@@ -1,0 +1,19 @@
+model:
+  ema_teacher:
+    backbone_unfreeze_step: 0
+    decay: 0.0
+    loss_ramp_steps: 0
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+  target_encoder: null
+  target_encoder_input: null
+optimizer:
+  lr_scheduler:
+    decay_steps: 30000
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+  param_groups: null
+trainer:
+  max_steps: 30000

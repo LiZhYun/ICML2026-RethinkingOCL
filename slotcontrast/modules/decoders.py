@@ -235,7 +235,7 @@ class SlotMixerDecoder(nn.Module):
             layers.append(self.output_transform)
         utils.init_parameters(layers, "xavier_uniform")
 
-    def forward(self, slots: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, slots: torch.Tensor, existence_mask: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         if not self.training and self.eval_output_size is not None:
             pos_emb = timm.layers.pos_embed.resample_abs_pos_embed(
                 self.pos_emb,
@@ -252,6 +252,13 @@ class SlotMixerDecoder(nn.Module):
         k = self.to_k(self.norm_k(slots))  # B x S x D
 
         dots = torch.einsum("bpd, bsd -> bps", q, k) * self.scale
+
+        # Mask out dead slots BEFORE softmax so they receive zero attention mass.
+        # existence_mask: [B, S] (1 = live slot, 0 = dead). Broadcast over patches (P).
+        if existence_mask is not None:
+            dead_mask = ~existence_mask.bool().unsqueeze(1)  # [B, 1, S]
+            dots = dots.masked_fill(dead_mask, float('-inf'))
+
         attn = dots.softmax(dim=-1)
 
         mixed_slots = torch.einsum("bps, bsd -> bpd", attn, slots)  # B x P x D
@@ -265,3 +272,13 @@ class SlotMixerDecoder(nn.Module):
         recons = self.output_transform(features)
 
         return {"reconstruction": recons, "masks": attn.transpose(-2, -1)}
+
+
+# --- MOCSP (D3) decoder extensions --------------------------------------
+# Re-export so ``get_class_by_name("slotcontrast.modules.decoders", ...)``
+# resolves the MOCSP-specific decoder subclasses. The subclasses themselves
+# live in a separate file so the base ``MLPDecoder`` is untouched.
+from slotcontrast.modules.decoders_mocsp import (  # noqa: E402, F401
+    KQueryMLPDecoder,
+    MOCSPMLPDecoder,
+)

@@ -1,0 +1,26 @@
+# Round-24 follow-on (codex Round-4 prescribed flow-IoU; flow data is not
+# available locally for MOVi datasets, so this snippet uses the same
+# architectural intent — adding a spatial-prior signal to the cosine-only
+# Sinkhorn affinity — but via per-slot CENTROID DISTANCE instead of
+# flow-warped IoU. No additional dataset plumbing required.
+#
+# Affinity = cosine_weight * cosine + centroid_dist_weight * exp(-d^2 / temp).
+# The centroid affinity is invariant to image resolution because the
+# centroids are normalized to [0, 1] inside the predictor (matches
+# `compute_slot_centroids_from_masks(normalize=True)`).
+#
+# Apply on top of any GCv1 (or SlotContrast) rescue config.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: true
+    centroid_dist_weight: 1.0
+    centroid_dist_temp: 0.05

@@ -1,0 +1,9 @@
+# Wave 6 — GCv1 without matching, rescue arm.
+# Apply on top of any GCv1 rescue config. Only flips skip_predictor=true so
+# the HungarianPredictor (matching) is bypassed; greedy-init slots from
+# frame 0 propagate through SlotAttention corrector at each frame with no
+# cross-frame matching. Tests whether the rescue-trained backbone's
+# temporal alignment replaces the need for explicit matching.
+model:
+  latent_processor:
+    skip_predictor: true

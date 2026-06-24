@@ -1,0 +1,29 @@
+# Round-26 architectural fusion: STRAIGHT-THROUGH Hungarian SoftIdent + featrec=1.5.
+#
+# Rationale (from Round-7 ablation table):
+#   - Hard-Hungarian wins MOVi-D 4/4 (discrete identity semantics work there).
+#   - Soft-Sinkhorn wins MOVi-E 4/4 (gradient flow works there).
+#   - Straight-through fuses both: forward = TRUE LSAP Hungarian permutation,
+#     backward = gradient through soft Sinkhorn matrix
+#     (Mena et al. 2018 Sinkhorn networks ST estimator).
+#   - Combined with featrec=1.5 to inherit the MOVi-D mask-precision lift.
+#
+# Codex Round-8 audit caught: row-argmax is NOT a permutation; replaced with
+# scipy.optimize.linear_sum_assignment for true bijection. Cached masks +
+# centroids now use the hard permutation matrix in ST mode.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

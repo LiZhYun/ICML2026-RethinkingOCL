@@ -1,0 +1,22 @@
+# Frozen-baseline override snippet (T1a, T1b, T2a, T2f frozen arms).
+# Apply on top of the dataset's rescue config.
+# Removes LoRA + R2 + R3, single LR with matched warmup/decay scheduler.
+# DOES NOT override optimizer.lr — inherits from the base rescue config so
+# YT-VIS keeps 8e-4, MOVi-D/E keep 4e-4.
+optimizer:
+  param_groups: null
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 15000
+model:
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+  target_encoder: null
+  target_encoder_input: null
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0

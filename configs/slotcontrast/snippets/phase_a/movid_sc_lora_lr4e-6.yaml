@@ -1,0 +1,29 @@
+# Phase-A Round-33 FIX-12: MOVi-D × SC × LoRA-rescue × encoder LoRA lr=4e-6 (10× lower).
+# Tests LoRA's LR-robustness: canonical LoRA encoder lr is 4e-5; this cell
+# drops it 10× to 4e-6 to see whether LoRA tolerates the lower-LR side of
+# its range. Companion to movid_sc_lora_lr4e-4.yaml on the upper side.
+# All other settings identical to movi_d_slotcontrast_rescue15k.yaml.
+optimizer:
+  param_groups:
+  - modules: encoder
+    include: "lora_"
+    lr: 4.0e-06
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: encoder
+    exclude: "lora_"
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: [initializer, processor, decoder]
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

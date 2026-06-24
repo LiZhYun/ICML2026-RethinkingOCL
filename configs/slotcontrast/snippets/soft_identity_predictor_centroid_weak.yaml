@@ -1,0 +1,24 @@
+# Round-24 Round-5 codex prescription: WEAK-centroid SoftIdent variant.
+#
+# Codex Round-5 verdict on the strong centroid (weight=1.0, temp=0.05):
+# fixes MOVi-C FG/ARI but damages mask precision (mbo/imbo) and catastrophically
+# hurts MOVi-D/E (Δ_fg_ari ≈ -0.25). The hypothesis: centroid prior is too sharp
+# and overrules the cosine signal where slot count is high.
+#
+# This snippet weakens the prior 5x (weight 1.0 → 0.2) and softens the
+# distance temperature 2x (temp 0.05 → 0.10) so that centroid only acts as
+# a tie-breaker rather than a primary signal.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: true
+    centroid_dist_weight: 0.2
+    centroid_dist_temp: 0.1

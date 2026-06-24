@@ -69,7 +69,7 @@ parser.add_argument("config_overrides", nargs="*", help="Additional arguments")
 def _setup_callbacks(args, config, log_path: pathlib.Path, dataset=None) -> Dict[str, pl.Callback]:
     callbacks = {}
 
-    if not args.dry:
+    if not args.dry and not getattr(config, "disable_checkpointing", False):
         # Explicitly construct model checkpoint to have control over checkpoints directory
         checkpointer = pl.callbacks.ModelCheckpoint(
             log_path / CHECKPOINT_SUBDIR,

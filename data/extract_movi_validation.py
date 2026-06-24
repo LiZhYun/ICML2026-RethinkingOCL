@@ -110,12 +110,12 @@ def main():
     parser.add_argument(
         "--dataset",
         required=True,
-        choices=["movi_d", "movi_e"],
+        choices=["movi_c", "movi_d", "movi_e"],
         help="Which MOVI dataset to extract"
     )
     parser.add_argument(
         "--data-dir",
-        default="/data",
+        default="/home/zhiyuan/Codes/exp_slotcontrast/data",
         help="Path to data directory containing tar files"
     )
     parser.add_argument(

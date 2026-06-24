@@ -1,0 +1,27 @@
+# Phase-A Round-33 FIX-12: MOVi-D × GCv1_pf × LoRA-rescue × encoder LoRA lr=4e-4.
+# Companion to movid_sc_lora_lr4e-4.yaml. Tests LoRA's LR-robustness at the high end —
+# the same LR where v2-fullft collapses.
+optimizer:
+  param_groups:
+  - modules: encoder
+    include: "lora_"
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: encoder
+    exclude: "lora_"
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: [initializer, processor, decoder]
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

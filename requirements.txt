@@ -15,7 +15,7 @@ scipy>=1.10.1
 requests>=2.31.0
 
 # PyTorch Lightning and related
-pytorch-lightning>=1.8.3
+pytorch-lightning<2.0
 torchmetrics>=1.2.0
 
 # Model utilities

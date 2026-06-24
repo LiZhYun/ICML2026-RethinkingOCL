@@ -1,4 +1,4 @@
-experiment_group: icml26_ocl_rethinking
+experiment_group: video-ocl
 experiment_name: movi_d
 
 globals:
@@ -11,6 +11,9 @@ globals:
   BATCH_SIZE_PER_GPU: 8
   TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
   BASE_LR: 0.0001
+  # === VideoSAUR baseline (uncomment when running VideoSAUR) ===
+  SIM_TEMP: 0.075
+  SIM_WEIGHT: 0.1
 
 trainer:
   max_steps: 100000
@@ -34,31 +37,55 @@ model:
   use_backbone_features: false  # Use stable DINO features for greedy init
   temporal_cross_window: 0  # 0=same-frame cycle, 0<=temporal cross-consistency<=chunk_size-1
   temporal_cross_mode: "both"  # or "backward" or "forward"
+  # ============== SlotContrast losses (default) ==============
+  # losses:
+  #   loss_featrec:
+  #     name: MSELoss
+  #     pred_dims:
+  #       - 0
+  #       - ${globals.FEAT_DIM}
+  #   loss_ss:
+  #     name: Slot_Slot_Contrastive_Loss
+  #     pred_key: processor.state
+  #     temperature: 0.1
+  #     batch_contrast: true
+  #     patch_inputs: false
+  #     keep_input_dim: true
+  #   loss_cycle:
+  #     name: CycleConsistencyLoss
+  #     pred_key: processor.cycle_slots
+  #     target_key: processor.cycle_targets
+
+  # loss_weights:
+  #   loss_featrec: 1.0
+  #   loss_ss: 0.5
+  #   loss_cycle: 0.0
+
+  # ============== VideoSAUR losses (uncomment to use, comment out above) ==============
   losses:
     loss_featrec:
       name: MSELoss
       pred_dims:
         - 0
         - ${globals.FEAT_DIM}
-    loss_ss:
-      name: Slot_Slot_Contrastive_Loss
-      pred_key: processor.state
-      temperature: 0.1
-      batch_contrast: true
-      patch_inputs: false
-      keep_input_dim: true
-    loss_cycle:
-      name: CycleConsistencyLoss
-      pred_key: processor.cycle_slots
-      target_key: processor.cycle_targets
-
+    loss_timesim:
+      name: CrossEntropyLoss
+      target_key: encoder.vit_block_keys12
+      remove_last_n_frames: 1
+      pred_dims:
+        - ${globals.FEAT_DIM}
+        - "${add: ${globals.FEAT_DIM}, ${globals.NUM_PATCHES}}"
+      target_transform:
+        name: utils.FeatureTimeSimilarity
+        softmax: true
+        temperature: ${globals.SIM_TEMP}
+        threshold: 0.0
   loss_weights:
     loss_featrec: 1.0
-    loss_ss: 0.5
-    loss_cycle: 0.0
+    loss_timesim: ${globals.SIM_WEIGHT}
 
   initializer:
-    name: FixedLearnedInit # FixedLearnedInit, GreedyFeatureInit, GreedyFeatureInitV2, ClusterFeatureInit
+    name: RandomInit # FixedLearnedInit, GreedyFeatureInit, GreedyFeatureInitV2, ClusterFeatureInit, RandomInit (VideoSAUR)
     n_slots: ${globals.NUM_SLOTS}
     dim: ${globals.SLOT_DIM}
     saliency_mode: local_consistency  # 'norm', 'entropy', 'variance', 'pca', 'local_consistency', 'local_consistency_pca', 'local_consistency_ms', 'local_consistency_uniform', 'local_consistency_centroid', 'local_consistency_balanced', 'local_consistency_soft', 'local_consistency_density', 'local_consistency_second', 'local_consistency_gaussian'
@@ -66,7 +93,7 @@ model:
     selection_mode: hard # hard, soft, neighbor_avg, knn_refine, centroid
     refine_linear: false  # Enable learnable refinement (V1 only)
     refine_hidden: 0
-    saliency_alpha: 1.0    # Try: 0.5, 0.7, 1.0, 1.3, 1.5
+    saliency_alpha: 0.5    # Try: 0.5, 0.7, 1.0, 1.3, 1.5
     spatial_suppression_radius: 0      # 1=3x3, 2=5x5, 3=7x7
     spatial_suppression_strength: 0.5  # 0=pure feature, 1=pure spatial
     soft_topk: 5
@@ -114,8 +141,8 @@ model:
     inp_dim: ${globals.SLOT_DIM}
     slot_dim: ${globals.SLOT_DIM}
     n_iters: 2
-    use_mlp: true
-    use_gru: true
+    use_mlp: false   # VideoSAUR: false
+    use_gru: false   # VideoSAUR: false
     use_ttt: false
     use_gated: false
     use_ent: false
@@ -127,12 +154,36 @@ model:
     skip_corrector: false  # Bypass slot attention, use greedy-initialized slots directly
     skip_predictor: false  # Bypass predictor, use greedy-initialized slots directly
 
+  # ============== SlotContrast decoder (default) ==============
+  # decoder:
+  #   name: MLPDecoder
+  #   inp_dim: ${globals.SLOT_DIM}
+  #   outp_dim: ${globals.FEAT_DIM}
+  #   hidden_dims: [1024, 1024, 1024]
+  #   n_patches: ${globals.NUM_PATCHES}
+
+  # ============== VideoSAUR decoder (uncomment to use, comment out above) ==============
   decoder:
-    name: MLPDecoder
+    name: SlotMixerDecoder
     inp_dim: ${globals.SLOT_DIM}
-    outp_dim: ${globals.FEAT_DIM}
-    hidden_dims: [1024, 1024, 1024]
+    embed_dim: ${globals.SLOT_DIM}
+    outp_dim: "${add: ${globals.FEAT_DIM}, ${globals.NUM_PATCHES}}"
     n_patches: ${globals.NUM_PATCHES}
+    allocator:
+      name: TransformerEncoder
+      dim: ${globals.SLOT_DIM}
+      memory_dim: ${globals.SLOT_DIM}
+      n_blocks: 2
+      n_heads: 4
+    renderer:
+      name: MLP
+      inp_dim: ${globals.SLOT_DIM}
+      outp_dim: 1024
+      hidden_dims: [1024, 1024, 1024]
+      final_activation: true
+    renderer_dim: 1024
+    use_layer_norms: true
+    pos_embed_mode: add
 
   predictor:
     name: networks.TransformerEncoder # networks.TransformerEncoder, networks.HungarianPredictor, networks.HungarianMemoryMatcher
@@ -147,7 +198,16 @@ model:
     max_slots: ${globals.NUM_SLOTS}  # Fixed registry capacity
     match_threshold: 2.0       # Cosine distance threshold for valid match (lower=stricter)
     ema_decay: 0.0             # EMA weight: new = decay*old + (1-decay)*current
-
+    # === Hybrid Cost Matching (Optional - requires GreedyFeatureInit) ===
+    use_hybrid_cost: false      # Enable hybrid cost matching
+    use_kalman: false
+    kalman_process_noise: 0.03
+    lambda_pos: 1.0            # Weight for position (centroid distance) cost
+    lambda_angular: 0.0        # Weight for angular (motion consistency) cost
+    lambda_iou: 1.0      # Feature-independent spatial matching
+    use_velocity: true
+    velocity_ema: 0.5    # 0=no smoothing, 1=constant velocity
+    use_iterative: false
 val_metrics:
   ari:
     name: VideoARI

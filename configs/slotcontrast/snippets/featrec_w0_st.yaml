@@ -1,0 +1,20 @@
+# featrec=0 cross-cell control: same ST + LoRA recipe as the headline,
+# but with the feature-reconstruction self-distillation loss disabled.
+# Tests whether featrec is necessary across all 8 architecture × dataset
+# cells (the existing GC × MOVi-C ablation generalizes here).
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 0.0
+    loss_ss: 0.5

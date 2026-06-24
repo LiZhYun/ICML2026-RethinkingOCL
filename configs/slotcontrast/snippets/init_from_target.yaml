@@ -1,0 +1,11 @@
+# Round-24 method evolution: route greedy/saliency slot init through the
+# frozen target_encoder backbone features instead of the LoRA-finetuned
+# student encoder. Hypothesis: stops saliency-landscape drift under per_frame
+# init when the encoder is being finetuned, fixing rescue's MOVi-C/E
+# regression on GCv1 + per_frame matched.
+#
+# Requires `model.target_encoder` to be configured (frozen pretrained DINOv2,
+# already present in all rescue configs). The forward path also caches the
+# target_encoder output so featrec reuses it without a second forward pass.
+model:
+  initializer_feature_source: target_encoder

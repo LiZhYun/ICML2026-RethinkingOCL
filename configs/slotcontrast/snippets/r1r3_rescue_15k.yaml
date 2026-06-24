@@ -1,0 +1,9 @@
+# R1+R3 simplified rescue (drop R2 = frozen target encoder).
+# Apply on top of any rescue config. Keeps lower LoRA LR (R1) and delayed
+# unfreeze step 5000 (R3); removes frozen target_encoder (R2).
+# Rationale: codex Round 16 review and the Wave 2 T1d ablation both show
+# R1+R3 ≥ full rescue (R2 unnecessary or counterproductive on MOVi-D SC).
+# Wave 7 tests whether R1+R3 unlocks the previously-null cells.
+model:
+  target_encoder: null
+  target_encoder_input: null

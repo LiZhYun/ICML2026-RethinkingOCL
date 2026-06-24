@@ -1,0 +1,49 @@
+# Full fine-tune baseline (no LoRA): same ST + featrec=1.5 recipe as the
+# headline rescue, but the entire DINOv2 backbone is trainable from step 0
+# instead of low-rank LoRA adapters. Per-encoder LR matches the LoRA
+# reduced LR (4e-5) for fairness so the only knob that differs is "is
+# adaptation rank-bounded or full-rank?".
+#
+# Used as a cross-architecture, cross-dataset baseline to address the
+# reviewer attack: "is LoRA the right choice vs full FT?"
+model:
+  encoder:
+    backbone:
+      frozen: false
+      lora_config: null
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+optimizer:
+  param_groups:
+  - modules: encoder
+    lr: 4.0e-05
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules:
+    - initializer
+    - processor
+    - decoder
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000

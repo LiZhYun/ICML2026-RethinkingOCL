@@ -1,0 +1,50 @@
+# Phase-A T1.1 fix: YT-VIS Full-FT with LR matched to YT-VIS LoRA-rescue.
+# The v2_generated/ytvis_sc_fullft_v2.yaml hardcoded encoder lr=4e-5 and
+# non-encoder lr=4e-4 (MOVi defaults), but YT-VIS base config uses 8e-4 with
+# LoRA-include reduced to 8e-5. This snippet uses 8e-5 / 8e-4 — i.e. the
+# encoder LR matches what LoRA-include actually receives on YT-VIS, which
+# is the "matched LR for fairness" the v2 snippet header CLAIMED but did
+# not deliver. All other settings identical to ytvis_sc_fullft_v2.yaml.
+model:
+  encoder:
+    backbone:
+      frozen: false
+      lora_config: null
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+optimizer:
+  param_groups:
+  - modules: encoder
+    lr: 8.0e-05
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules:
+    - initializer
+    - processor
+    - decoder
+    lr: 0.0008
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

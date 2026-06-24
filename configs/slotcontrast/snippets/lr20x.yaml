@@ -1,0 +1,23 @@
+# Override snippet for T2d 20x LoRA-LR ratio. LoRA LR = 2e-5 (vs 4e-5 default = 10x).
+optimizer:
+  param_groups:
+    - modules: encoder
+      include: "lora_"
+      lr: 0.00002
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000
+    - modules: encoder
+      exclude: "lora_"
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000
+    - modules: [initializer, processor, decoder]
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000

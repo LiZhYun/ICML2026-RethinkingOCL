@@ -138,6 +138,8 @@ class VideoPipeline(DataPipeline):
         shuffle: bool = False,
         shuffle_size: int = 100,
         duplicate: Optional[Dict[str, str]] = None,
+        frame_stride: int = 1,
+        occl_curriculum: Optional[Dict] = None,
     ):
         super().__init__(keys)
         self.transforms = transforms
@@ -150,6 +152,13 @@ class VideoPipeline(DataPipeline):
         self.shuffle = shuffle
         self.shuffle_size = shuffle_size
         self.duplicate = duplicate
+        if frame_stride < 1:
+            raise ValueError(f"frame_stride must be >= 1, got {frame_stride}")
+        self.frame_stride = frame_stride
+        # Round-26 B2: config-gated OcclCurr hook. `occl_curriculum` is a dict
+        # with keys {enabled, curriculum_steps, max_ell_target}; when enabled,
+        # inject `OcclusionCurriculumSampler` after `split_to_chunks`.
+        self.occl_curriculum = occl_curriculum or {}
 
     def get_num_samples(self, num_orig_samples: int) -> Optional[int]:
         if self.use_chunks:
@@ -157,7 +166,9 @@ class VideoPipeline(DataPipeline):
                 return num_orig_samples
             else:
                 if self.video_size is not None:
-                    return num_orig_samples * self.video_size // self.chunk_size
+                    # Each chunk spans `chunk_size * frame_stride` raw frames
+                    span = self.chunk_size * self.frame_stride
+                    return num_orig_samples * self.video_size // span
                 else:
                     return None  # Can not provide the number of samples
         else:
@@ -173,8 +184,19 @@ class VideoPipeline(DataPipeline):
                 shuffle=shuffle,
                 one_chunk_per_video=self.sample_one_chunk_per_video,
                 chunk_size=self.chunk_size,
+                frame_stride=self.frame_stride,
             )
             dataset = dataset.compose(split_fn)
+
+        # Round-26 B2: OcclCurr hook applied after chunking, before shuffle.
+        # No-op unless occl_curriculum.enabled=true in config.
+        if self.use_chunks and self.occl_curriculum.get("enabled", False):
+            from slotcontrast.data.transforms import OcclusionCurriculumSampler
+            sampler = OcclusionCurriculumSampler(
+                curriculum_steps=int(self.occl_curriculum.get("curriculum_steps", 25000)),
+                max_ell_target=int(self.occl_curriculum.get("max_ell_target", 8)),
+            )
+            dataset = dataset.compose(sampler)
 
         if self.shuffle:
             # First chunking, then shuffling
@@ -196,22 +218,47 @@ def split_to_chunks(
     shuffle: bool,
     one_chunk_per_video: bool,
     axis: int = 0,
+    frame_stride: int = 1,
 ):
-    """Split video to chunks with chunk_size size."""
+    """Split video to chunks with chunk_size size.
+
+    When `frame_stride > 1`, each chunk samples frames at positions
+    `[t, t+stride, ..., t+(chunk_size-1)*stride]`. A chunk spans
+    `chunk_size * frame_stride` raw frames; chunks are non-overlapping
+    in the start-position grid (start positions: `0, span, 2*span, ...`).
+    `frame_stride=1` reproduces the previous contiguous behavior.
+    """
+    if frame_stride < 1:
+        raise ValueError(f"frame_stride must be >= 1, got {frame_stride}")
     for sample in data:
         key = sample["__key__"]
         video_size = sample[keys_to_split[0]].shape[0]
 
-        num_chunks = video_size // chunk_size
-
-        data_chunks = [
-            np.array_split(
-                sample[key],
-                range(chunk_size, video_size, chunk_size),
-                axis=axis,
-            )[:num_chunks]
-            for key in keys_to_split
-        ]
+        if frame_stride == 1:
+            num_chunks = video_size // chunk_size
+            data_chunks = [
+                np.array_split(
+                    sample[key],
+                    range(chunk_size, video_size, chunk_size),
+                    axis=axis,
+                )[:num_chunks]
+                for key in keys_to_split
+            ]
+        else:
+            span = chunk_size * frame_stride
+            num_chunks = video_size // span
+            # For each chunk c, build index list [c*span, c*span + stride, ...,
+            # c*span + (chunk_size-1)*stride] (length = chunk_size). Slicing on
+            # `axis` with `np.take` keeps non-temporal dims intact.
+            data_chunks = []
+            for key in keys_to_split:
+                arr = sample[key]
+                per_key = []
+                for c in range(num_chunks):
+                    base = c * span
+                    idx = np.arange(chunk_size, dtype=np.int64) * frame_stride + base
+                    per_key.append(np.take(arr, idx, axis=axis))
+                data_chunks.append(per_key)
 
         if shuffle:
             chunks_ids = np.random.permutation(range(num_chunks))

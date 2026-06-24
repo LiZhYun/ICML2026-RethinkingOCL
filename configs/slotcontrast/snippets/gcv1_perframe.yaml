@@ -1,0 +1,8 @@
+# GCv1 per-frame init override (Wave 10).
+# Switches GreedyFeatureInit from first_frame (state-propagation) to per_frame
+# (fresh greedy init at every frame). This matches the original GCv1 paper
+# setup where Hungarian Identity Ratio < 1.0 (Figure 5) — under first_frame,
+# state propagation makes Hungarian degenerate to identity.
+model:
+  initializer:
+    init_mode: per_frame

@@ -1,0 +1,48 @@
+# Phase-A T1.2 LR-sweep cell: MOVi-D × gcv1_pf × Full-FT × encoder lr=1e-4.
+# v2 grid already covered encoder lr=4e-5 (the canonical fullft cell).
+# This snippet sweeps the other 3 points so we can defuse the "LoRA wins
+# only because fullft was under-LR'd" reviewer attack. Non-encoder LR is
+# kept at the MOVi base value (4e-4) to keep the sweep one-dimensional.
+model:
+  encoder:
+    backbone:
+      frozen: false
+      lora_config: null
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+optimizer:
+  param_groups:
+  - modules: encoder
+    lr: 1.0e-04
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules:
+    - initializer
+    - processor
+    - decoder
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

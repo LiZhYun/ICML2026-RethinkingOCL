@@ -1,0 +1,226 @@
+experiment_group: video-ocl
+experiment_name: ytvis2021_gcv1_frozen15k
+seed: 42
+
+# Round 8 Phase C: YT-VIS frozen baseline (no LoRA at all).
+# Delta from `ytvis2021_gcv1_naive_lora15k.yaml`:
+#   - encoder.backbone.frozen: true (was false)
+#   - REMOVED encoder.backbone.lora_config
+#   - kept backbone_unfreeze_step=0 since there is no LoRA to unfreeze
+# All other settings identical to naive so the comparison isolates "has LoRA" vs "no LoRA".
+# This is the Cell-C0-analog for YT-VIS that the Round 8 reviewer asked for.
+
+globals:
+  NUM_SLOTS: 7
+  SLOT_DIM: 64
+  DINO_MODEL: vit_base_patch14_dinov2
+  FEAT_DIM: 768
+  NUM_PATCHES: 1369
+  NUM_GPUS: 1
+  BATCH_SIZE_PER_GPU: 8
+  TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
+  BASE_LR: 0.0001
+  SIM_TEMP: 0.15
+  SIM_WEIGHT: 0.1
+
+trainer:
+  max_steps: 15000
+  log_every_n_steps: 250
+  val_check_interval: 2500
+  gradient_clip_val: 0.05
+
+optimizer:
+  name: Adam
+  lr: 0.0008
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: ${trainer.max_steps}
+
+model:
+  input_type: video
+  visualize: false
+  visualize_every_n_steps: 10000
+  use_backbone_features: false
+  temporal_cross_window: 0
+  temporal_cross_mode: "both"
+
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+
+  losses:
+    loss_featrec:
+      name: MSELoss
+      pred_dims:
+        - 0
+        - ${globals.FEAT_DIM}
+    loss_ss:
+      name: Slot_Slot_Contrastive_Loss
+      pred_key: processor.state
+      temperature: 0.1
+      batch_contrast: true
+      patch_inputs: false
+      keep_input_dim: true
+  loss_weights:
+    loss_featrec: 1.0
+    loss_ss: 0.5
+
+  initializer:
+    name: GreedyFeatureInit
+    n_slots: ${globals.NUM_SLOTS}
+    dim: ${globals.SLOT_DIM}
+    saliency_mode: local_consistency
+    neighbor_radius: 2
+    selection_mode: hard
+    refine_linear: false
+    refine_hidden: 0
+    saliency_alpha: 0.5
+    spatial_suppression_radius: 0
+    spatial_suppression_strength: 0.5
+    soft_topk: 5
+    temperature: 0.1
+    neighbor_avg_radius: 1
+    saliency_smoothing: 0
+    init_mode: first_frame
+    aggregate: false
+    aggregate_threshold: 0.5
+    init_threshold: 0.0
+    min_slots: 1
+    cluster_method: agglomerative
+    affinity: cosine
+    linkage: average
+
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: ${globals.DINO_MODEL}
+      features: [vit_block12, vit_block_keys12]
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: true
+    use_pos_embed: false
+    pos_embed:
+      name: utils.LearnedPositionEmbed
+      dim: ${globals.FEAT_DIM}
+      n_patches: ${globals.NUM_PATCHES}
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: ${globals.FEAT_DIM}
+      outp_dim: ${globals.SLOT_DIM}
+      hidden_dim: "${mul: ${globals.FEAT_DIM}, 2}"
+      layer_norm: true
+    main_features_key: vit_block12
+    normalize_features: false
+    normalization_type: "l2"
+
+  grouper:
+    name: SlotAttention
+    inp_dim: ${globals.SLOT_DIM}
+    slot_dim: ${globals.SLOT_DIM}
+    n_iters: 2
+    use_mlp: true
+    use_gru: true
+    use_ttt: false
+    use_gated: false
+    use_ent: false
+
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+    use_ttt3r: false
+    skip_corrector: false
+    skip_predictor: false
+
+  decoder:
+    name: MLPDecoder
+    inp_dim: ${globals.SLOT_DIM}
+    outp_dim: ${globals.FEAT_DIM}
+    hidden_dims: [1024, 1024, 1024]
+    n_patches: ${globals.NUM_PATCHES}
+
+  predictor:
+    name: networks.HungarianPredictor
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+    use_gated: false
+    similarity: cosine
+    pre_match: false
+    max_slots: ${globals.NUM_SLOTS}
+    match_threshold: 2.0
+    ema_decay: 0.0
+    use_hybrid_cost: false
+    use_kalman: false
+    kalman_process_noise: 0.03
+    lambda_pos: 1.0
+    lambda_angular: 1.0
+    lambda_iou: 1.0
+    use_velocity: true
+    velocity_ema: 0.5
+    use_iterative: false
+
+val_metrics:
+  ari:
+    name: VideoARI
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  fg_ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_ari:
+    name: ImageARI
+    video_input: true
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    video_input: true
+    ignore_background: false
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+
+dataset:
+  train_shards: "ytvis2021_resized/ytvis-train-{000000..000083}.tar"
+  val_shards: "ytvis2021_resized/ytvis-validation-{000000..000029}.tar"
+  batch_size: ${globals.BATCH_SIZE_PER_GPU}
+  val_batch_size: 1
+  val_size: 200
+  num_workers: 4
+  num_val_workers: 1
+  train_pipeline:
+    chunk_size: 4
+    keys: [video]
+    frame_stride: 1
+    sample_one_chunk_per_video: true
+    transforms:
+      name: ytvis_train
+      type: video
+      crop_type: short_side_resize_random
+      input_size: 518
+      num_classes: 32
+      add_segmentations: false
+      use_3d_pos_embed: false
+  val_pipeline:
+    use_chunks: false
+    keys: [video, segmentations]
+    transforms:
+      name: ytvis_val
+      type: video
+      crop_type: central
+      input_size: 518
+      num_classes: 25
+      use_3d_pos_embed: false

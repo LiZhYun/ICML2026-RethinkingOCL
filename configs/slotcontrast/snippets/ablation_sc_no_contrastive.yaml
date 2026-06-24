@@ -1,0 +1,13 @@
+# D1-light mechanism ablation: SC architecture WITHOUT slot-slot contrastive loss.
+#
+# Hypothesis: the slot-slot contrastive loss (which pulls slot[i,t] toward slot[i,t-1])
+# is the architectural lever that lets SC + LoRA + nomatch beat the frozen baseline.
+# Without it, SC should behave like GCv1 — nomatch should collapse.
+#
+# Apply as a *combined* override on top of one of the predictor variants:
+#   --config_overrides_file=ablation_sc_no_contrastive.yaml
+# Then layer ST/default/no-ST/nomatch via dotlist or another snippet.
+model:
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.0   # disable slot-slot contrastive loss
