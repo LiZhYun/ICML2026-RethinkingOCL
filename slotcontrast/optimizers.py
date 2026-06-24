@@ -62,11 +62,38 @@ class OptimizerBuilder:
                             f"this module is not available. Available modules: {list(modules)}."
                         )
 
-                params = itertools.chain.from_iterable(
-                    modules[name].parameters() for name in group_modules
+                # Round 3 Codex fix: per-group name filter to split LoRA vs
+                # non-LoRA params within the same module. ``include`` keeps
+                # only names containing the substring; ``exclude`` drops
+                # names containing the substring. Mutually exclusive. Default
+                # None → include all params of the listed modules.
+                include_filter = param_group.get("include", None)
+                exclude_filter = param_group.get("exclude", None)
+                if include_filter is not None and exclude_filter is not None:
+                    raise ValueError(
+                        f"param_group {idx} has both `include` and `exclude` "
+                        "filters; use at most one."
+                    )
+
+                named_params = itertools.chain.from_iterable(
+                    modules[name].named_parameters() for name in group_modules
                 )
+                if include_filter is not None:
+                    params = (p for (n, p) in named_params if include_filter in n)
+                elif exclude_filter is not None:
+                    params = (p for (n, p) in named_params if exclude_filter not in n)
+                else:
+                    params = (p for (n, p) in named_params)
+
                 parameters.append(
-                    {"params": params, **{k: v for k, v in param_group.items() if k != "modules"}}
+                    {
+                        "params": list(params),
+                        **{
+                            k: v
+                            for k, v in param_group.items()
+                            if k not in ("modules", "include", "exclude")
+                        },
+                    }
                 )
 
         if self.name == "adam":

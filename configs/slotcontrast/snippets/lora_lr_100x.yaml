@@ -1,0 +1,24 @@
+# Round-24 escalation: 100× lower LoRA LR (4e-6) — test if LoRA destabilization
+# is the residual cause of GCv1 + per_frame + matched MOVi-C/E rescue regression.
+optimizer:
+  param_groups:
+    - modules: encoder
+      include: "lora_"
+      lr: 0.000004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000
+    - modules: encoder
+      exclude: "lora_"
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000
+    - modules: [initializer, processor, decoder]
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000

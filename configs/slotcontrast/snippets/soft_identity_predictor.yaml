@@ -1,0 +1,19 @@
+# Round-24 Hail Mary: replace HungarianPredictor with SoftIdentityPredictor
+# (Sinkhorn soft assignment over cosine + flow-warped IoU). Differentiable
+# matching means LoRA gradients can shape the feature/slot space to be
+# matchable -- the architectural lever Codex's Round-3 verdict prescribed
+# for Claim 3 ("LoRA replaces hard Hungarian").
+#
+# Apply on top of any GCv1 (or SlotContrast) rescue config. Keeps
+# skip_predictor=false so the soft predictor runs each step.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    flow_iou_weight: 0.0
+    use_flow_iou: false

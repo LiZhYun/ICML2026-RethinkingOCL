@@ -33,6 +33,7 @@ def build(config, name: Optional[str] = "WebdatasetDataModule", data_dir: Option
             val_pipeline=val_pipeline,
             **config_as_kwargs(config, to_filter=("train_pipeline", "val_pipeline")),
         )
+
     elif name == "DummyDataModule":
         return DummyDataModule(
             train_transforms=transforms.build(config.train_transforms),
@@ -91,9 +92,82 @@ class WebdatasetDataModule(pl.LightningDataModule):
         cache_train: bool = False,
         cache_val: bool = False,
         cache_dir: Optional[str] = None,
+        train_keys: Optional[List[str]] = None,
+        depth_cache_dir: Optional[str] = None,
+        flow_cache_dir: Optional[str] = None,
     ):
         super().__init__()
         data_dir = data_dir if data_dir else get_data_root_dir()
+
+        # Wire VGGT depth cache (fp16 [T,H,W] per-video .npy files). We verify
+        # the provenance metadata up-front so that a silent fallback cache
+        # (backend != "vggt") cannot sneak into training. Per-sample lookup
+        # happens in `_get_dataset` via a wds map step; missing files raise.
+        self.depth_cache_dir = depth_cache_dir
+        if depth_cache_dir is not None:
+            provenance_path = os.path.join(depth_cache_dir, "_PROVENANCE.txt")
+            if not os.path.isfile(provenance_path):
+                raise FileNotFoundError(
+                    f"Depth cache missing _PROVENANCE.txt at {provenance_path}"
+                )
+            with open(provenance_path, "r") as f:
+                provenance_text = f.read()
+            # Expect a line like "backend: vggt" (strict match).
+            backend_line = None
+            for line in provenance_text.splitlines():
+                if line.strip().startswith("backend:"):
+                    backend_line = line.strip().split(":", 1)[1].strip()
+                    break
+            if backend_line != "vggt":
+                raise ValueError(
+                    f"Depth cache at {depth_cache_dir} has backend={backend_line!r}, "
+                    f"expected 'vggt'. Fallback caches are forbidden."
+                )
+
+        # Wire RAFT forward-flow cache (fp16 [T-1, H, W, 2] per-video .npy files
+        # produced by scripts/precompute_raft_flow_ytvis.py). Mirrors the depth
+        # path: a provenance file pins the backend so we cannot silently mix in
+        # a fallback cache. Per-sample attach happens in `_get_dataset`; missing
+        # files raise per the no-fallback rule. The attach step zero-pads the
+        # trailing frame so the cached tensor becomes [T, H, W, 2], matching
+        # video's T along axis 0 for `split_to_chunks`.
+        #
+        # `forward_flow` MUST appear in the pipeline `keys` regardless of source,
+        # because `split_to_chunks` uses `keys` to decide which tensors to split
+        # along the temporal axis; if flow is not in `keys` it is repeated whole
+        # across chunks (wrong).
+        #
+        # MOVi-D/E: flow ships inside the tar (`forward_flow.npy`, Kubric GT);
+        #           leave `flow_cache_dir=None` and add `forward_flow` to the
+        #           pipeline `keys`. Nothing else to wire here.
+        # YT-VIS 2021: no GT flow; set `flow_cache_dir` to the RAFT sidecar
+        #              directory AND add `forward_flow` to the pipeline `keys`
+        #              (the attach step injects it post-decode so the filter
+        #              accepts it — tar absence is fine because wds only filters
+        #              out entries that are present).
+        self.flow_cache_dir = flow_cache_dir
+        if flow_cache_dir is not None:
+            if not os.path.isdir(flow_cache_dir):
+                raise FileNotFoundError(
+                    f"Flow cache directory does not exist: {flow_cache_dir}"
+                )
+            provenance_path = os.path.join(flow_cache_dir, "_PROVENANCE.txt")
+            if not os.path.isfile(provenance_path):
+                raise FileNotFoundError(
+                    f"Flow cache missing _PROVENANCE.txt at {provenance_path}"
+                )
+            with open(provenance_path, "r") as f:
+                provenance_text = f.read()
+            backend_line = None
+            for line in provenance_text.splitlines():
+                if line.strip().startswith("backend:"):
+                    backend_line = line.strip().split(":", 1)[1].strip()
+                    break
+            if backend_line != "raft":
+                raise ValueError(
+                    f"Flow cache at {flow_cache_dir} has backend={backend_line!r}, "
+                    f"expected 'raft'. Fallback caches are forbidden."
+                )
 
         def get_shards_and_num_shards(shards):
             if shards is None:
@@ -127,6 +201,12 @@ class WebdatasetDataModule(pl.LightningDataModule):
         self.cache_dir = cache_dir
         self.cache_train = cache_train
         self.cache_val = cache_val
+
+        # Optional override for the train-stream key filter. When provided, this
+        # tuple is used as the `prefixes_to_keep` filter for the train dataset
+        # (in `_get_dataset`), instead of `train_pipeline.keys`. Defaults to None
+        # (preserves backward-compatible behavior — train pipeline's `keys` is used).
+        self.train_keys = tuple(train_keys) if train_keys is not None else None
 
         self.num_nodes = None  # Set lazily
 
@@ -206,6 +286,65 @@ class WebdatasetDataModule(pl.LightningDataModule):
     @staticmethod
     def _remove_extensions(input_dict: Dict[str, Any]) -> Dict[str, Any]:
         return {name.split(".")[0]: value for name, value in input_dict.items()}
+
+    @staticmethod
+    def _attach_depth(
+        sample: Dict[str, Any], depth_cache_dir: str
+    ) -> Dict[str, Any]:
+        """Attach VGGT depth [T, H, W] fp16 from a sidecar .npy cache.
+
+        Missing cache files raise rather than silently dropping depth: a
+        downstream config that asked for depth must receive depth, otherwise
+        the training objective would degrade silently (forbidden per
+        project rule "no fallback / patchwork").
+        """
+        key = sample.get("__key__")
+        if key is None:
+            raise KeyError("Sample missing '__key__'; cannot look up depth cache.")
+        depth_path = os.path.join(depth_cache_dir, f"{key}_depth.npy")
+        if not os.path.isfile(depth_path):
+            raise FileNotFoundError(
+                f"Depth cache miss for key {key!r}: expected {depth_path}"
+            )
+        depth = np.load(depth_path)  # [T, H, W] fp16
+        sample["depth"] = depth
+        return sample
+
+    @staticmethod
+    def _attach_flow(
+        sample: Dict[str, Any], flow_cache_dir: str
+    ) -> Dict[str, Any]:
+        """Attach RAFT forward flow [T, H, W, 2] fp16 from a sidecar .npy cache.
+
+        Mirrors `_attach_depth` — missing cache files raise (no silent fallback).
+        The file key convention matches `scripts/precompute_raft_flow_ytvis.py`:
+        `{flow_cache_dir}/{__key__}_forward_flow.npy`. The attach runs AFTER
+        `_remove_extensions` so `sample["__key__"]` is already the raw video id.
+
+        RAFT cache files are written as [T-1, H, W, 2] (one flow per adjacent
+        pair). To keep the temporal axis length consistent with `video`
+        ([T, ...]) for `split_to_chunks` — which uses the first key's shape[0]
+        as the canonical T — we pad a zero last frame to produce [T, H, W, 2].
+        The loss `FlowConsistencyMaskLoss` explicitly tolerates both strict
+        (T-1) and padded (T) variants (see `slotcontrast/losses.py:1010-1014`
+        and `slotcontrast/modules/video.py:444`), and the zero-pad last entry
+        is consumed by the trailing-frame boundary case (no t→t+1 pair exists
+        there, so the padded entry is never read by downstream logic).
+        """
+        key = sample.get("__key__")
+        if key is None:
+            raise KeyError("Sample missing '__key__'; cannot look up flow cache.")
+        flow_path = os.path.join(flow_cache_dir, f"{key}_forward_flow.npy")
+        if not os.path.isfile(flow_path):
+            raise FileNotFoundError(
+                f"Flow cache miss for key {key!r}: expected {flow_path}"
+            )
+        flow = np.load(flow_path)  # [T-1, H, W, 2] fp16 (strict)
+        # Pad to [T, H, W, 2] so temporal chunking aligns 1:1 with video.
+        pad = np.zeros((1, *flow.shape[1:]), dtype=flow.dtype)
+        flow = np.concatenate([flow, pad], axis=0)
+        sample["forward_flow"] = flow
+        return sample
 
     @staticmethod
     def _pad(dataset: Iterable[Dict[str, Any]], n_samples: int) -> Iterable[Dict[str, Any]]:
@@ -308,6 +447,7 @@ class WebdatasetDataModule(pl.LightningDataModule):
         padded_size_per_worker: Optional[int] = None,
         cache_dir: Optional[str] = None,
         cache_size: int = -1,
+        keys_override: Optional[Tuple[str, ...]] = None,
     ):
         if shuffle:
             # For shuffling samples, we sample shards with replacement. This means that each node
@@ -326,13 +466,40 @@ class WebdatasetDataModule(pl.LightningDataModule):
             )
 
         # Filter unneeded properties first to avoid decoding them. If pipeline defines no keys,
-        # keep everything.
-        if pipeline and pipeline.keys is not None:
+        # keep everything. `keys_override` (e.g. dataset-level `train_keys`) takes precedence
+        # so the train stream can request additional sidecars (segmentations, track_ids)
+        # without changing the pipeline-level `keys` (which also drives chunk splitting).
+        keys_to_keep = keys_override if keys_override is not None else (
+            pipeline.keys if pipeline else None
+        )
+        if keys_to_keep is not None:
             dataset = dataset.map(
-                partial(WebdatasetDataModule._filter_properties, prefixes_to_keep=pipeline.keys)
+                partial(WebdatasetDataModule._filter_properties, prefixes_to_keep=keys_to_keep)
             )
 
         dataset = dataset.decode("rgb").map(WebdatasetDataModule._remove_extensions)
+
+        # Attach per-sample VGGT depth from disk cache, keyed on "__key__".
+        # Missing files raise — no silent fallback.
+        if self.depth_cache_dir is not None:
+            dataset = dataset.map(
+                partial(
+                    WebdatasetDataModule._attach_depth,
+                    depth_cache_dir=self.depth_cache_dir,
+                )
+            )
+
+        # Attach per-sample RAFT forward flow from disk cache, keyed on "__key__".
+        # Only used when the dataset has no in-tar flow (e.g. YT-VIS 2021); for
+        # MOVi-D/E leave `flow_cache_dir=None` and list `forward_flow` in the
+        # pipeline `keys` instead. Missing files raise — no silent fallback.
+        if self.flow_cache_dir is not None:
+            dataset = dataset.map(
+                partial(
+                    WebdatasetDataModule._attach_flow,
+                    flow_cache_dir=self.flow_cache_dir,
+                )
+            )
 
         if padded_size_per_worker is not None:
             # Pad dataset stream to contain a certain number of samples. This is needed to balance
@@ -375,9 +542,10 @@ class WebdatasetDataModule(pl.LightningDataModule):
             batch_size=None,
             worker_init_fn=worker_init_function,
             persistent_workers=num_workers > 0,
-            # Heuristic to check whether GPUs are used. Misses the case where num_gpus = 1
-            pin_memory=(self.num_nodes > 1 and torch.cuda.is_available()),
-            prefetch_factor=2,
+            # Enable pin_memory whenever CUDA is available — safe, same tensors
+            pin_memory=torch.cuda.is_available(),
+            # Bump prefetch to hide worker decode latency at bs=64
+            prefetch_factor=4,
         )
 
         num_batches_per_epoch = None
@@ -413,6 +581,7 @@ class WebdatasetDataModule(pl.LightningDataModule):
             shuffle=True,
             pipeline=self.train_pipeline,
             cache_dir=self.cache_dir if self.cache_train else None,
+            keys_override=self.train_keys,
         )
 
     def val_dataset(self):

@@ -363,9 +363,14 @@ def get_activation_fn(name_or_instance: Union[str, nn.Module]) -> nn.Module:
 class CoordinatePositionEmbed(nn.Module):
     """Coordinate positional embedding as in Slot Attention."""
 
-    def __init__(self, dim: int, size: Tuple[int, int]):
+    def __init__(self, dim: int, size: Optional[Tuple[int, int]] = None, **kwargs):
         super().__init__()
-        if isinstance(size, int):
+        if size is None:
+            if kwargs.get("n_patches") is None:
+                raise ValueError("Need to specify size or n_patches for CoordinatePositionEmbed")
+            else:
+                size = (int(math.sqrt(kwargs["n_patches"])), int(math.sqrt(kwargs["n_patches"])))
+        elif isinstance(size, int):
             size = (size, size)
         self.register_buffer("grid", self.build_grid(size))
         self.proj = nn.Conv2d(self.grid.shape[0], dim, kernel_size=1, bias=True)
@@ -405,6 +410,7 @@ class LearnedPositionEmbed(nn.Module):
         size: Optional[Tuple[int, int]] = None,
         initial_scale: Optional[float] = None,
         dropout: float = 0.0,
+        **kwargs
     ):
         super().__init__()
         if n_patches is None and size is None:
@@ -449,6 +455,104 @@ class LearnedPositionEmbed(nn.Module):
             x = self.dropout(x)
 
         return x
+
+
+class RotaryPositionEmbed(nn.Module):
+    """Rotary Position Embedding applied to features for fair pos_emb comparison.
+    
+    Applies rotation-based positional encoding to feature vectors, encoding position
+    through phase shifts. For 2D vision inputs, uses separate rotations for H and W axes.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        max_seq_len: int = 2048,
+        base: float = 10000.0,
+        use_2d: bool = True,
+        **kwargs
+    ):
+        super().__init__()
+        assert dim % 2 == 0, "Dimension must be even for pair-wise rotation"
+        self.expected_dims = 3
+        self.dim = dim
+        self.use_2d = use_2d
+        
+        # For 2D: split dim in half for H-axis and W-axis
+        rot_dim = dim // 2 if use_2d else dim
+        
+        # Precompute inverse frequencies: theta_i = base^(-2i/d)
+        inv_freq = 1.0 / (base ** (torch.arange(0, rot_dim, 2).float() / rot_dim))
+        self.register_buffer("inv_freq", inv_freq)
+        
+        # Cache for position encodings
+        self._cos_cached = None
+        self._sin_cached = None
+        self._cached_seq_len = None
+
+    def _compute_cos_sin(self, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Precompute cos and sin values for all positions."""
+        if self._cached_seq_len == seq_len and self._cos_cached is not None:
+            return self._cos_cached, self._sin_cached
+        
+        # Position indices
+        t = torch.arange(seq_len, device=self.inv_freq.device).type_as(self.inv_freq)
+        # Compute freqs: outer product [seq_len, rot_dim/2]
+        freqs = torch.outer(t, self.inv_freq)
+        # Duplicate for pairs: [seq_len, rot_dim]
+        emb = torch.cat([freqs, freqs], dim=-1)
+        
+        self._cos_cached = emb.cos()
+        self._sin_cached = emb.sin()
+        self._cached_seq_len = seq_len
+        
+        return self._cos_cached, self._sin_cached
+
+    @staticmethod
+    def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+        """Rotate half the dimensions: (x1, x2, x3, x4, ...) -> (-x2, x1, -x4, x3, ...)"""
+        x1, x2 = x[..., ::2], x[..., 1::2]
+        return torch.stack([-x2, x1], dim=-1).flatten(-2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply rotary position embedding to features.
+        
+        Args:
+            x: (B, N, D) where N is number of patches
+            
+        Returns:
+            Rotated features (B, N, D)
+        """
+        assert x.ndim == 3, f"Expected (B, N, D), got {x.shape}"
+        B, N, D = x.shape
+        
+        if self.use_2d:
+            # 2D position encoding: split dim for H and W axes
+            H = W = int(N ** 0.5)
+            assert H * W == N, f"Cannot reshape {N} patches to square grid"
+            
+            # Split features in half
+            x_h, x_w = x[..., :D//2], x[..., D//2:]
+            
+            # Get position encodings for H and W
+            cos_h, sin_h = self._compute_cos_sin(H)
+            cos_w, sin_w = self._compute_cos_sin(W)
+            
+            # Expand to 2D grid: [H, W, rot_dim]
+            cos_h = cos_h[:, None, :].expand(H, W, -1).reshape(N, -1)
+            sin_h = sin_h[:, None, :].expand(H, W, -1).reshape(N, -1)
+            cos_w = cos_w[None, :, :].expand(H, W, -1).reshape(N, -1)
+            sin_w = sin_w[None, :, :].expand(H, W, -1).reshape(N, -1)
+            
+            # Apply rotation to each half
+            x_h_rot = x_h * cos_h + self._rotate_half(x_h) * sin_h
+            x_w_rot = x_w * cos_w + self._rotate_half(x_w) * sin_w
+            
+            return torch.cat([x_h_rot, x_w_rot], dim=-1)
+        else:
+            # 1D position encoding: flatten sequence
+            cos, sin = self._compute_cos_sin(N)
+            return x * cos + self._rotate_half(x) * sin
 
 
 class FeatureSimilarity:
@@ -601,7 +705,7 @@ class FourierPositionEmbed3D(nn.Module):
     Unprojects 2D patch positions to 3D world coordinates and applies Fourier encoding.
     """
 
-    def __init__(self, dim: int, patch_size: int = 14, num_bands: int = 64):
+    def __init__(self, dim: int, patch_size: int = 14, num_bands: int = 64, **kwargs):
         super().__init__()
         self.dim = dim
         self.patch_size = patch_size

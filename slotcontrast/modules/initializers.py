@@ -104,6 +104,42 @@ def compute_feature_density(features_norm: torch.Tensor, k: int = 10) -> torch.T
     return density
 
 
+def compute_slot_centroids_from_masks(
+    masks: torch.Tensor, patch_h: int, patch_w: int, normalize: bool = True
+) -> torch.Tensor:
+    """Compute spatial centroids from slot attention masks.
+    
+    Args:
+        masks: Slot attention weights [B, n_slots, n_patches]
+        patch_h, patch_w: Spatial grid dimensions
+        normalize: If True, normalize to [0, 1] range
+    
+    Returns:
+        centroids: [B, n_slots, 2] (h, w) coordinates
+    """
+    B, n_slots, n_patches = masks.shape
+    device = masks.device
+    
+    # Create coordinate grids
+    coords_h = torch.arange(patch_h, device=device, dtype=torch.float32)
+    coords_w = torch.arange(patch_w, device=device, dtype=torch.float32)
+    grid_h, grid_w = torch.meshgrid(coords_h, coords_w, indexing='ij')
+    grid_h = grid_h.reshape(n_patches)
+    grid_w = grid_w.reshape(n_patches)
+    
+    # Weighted average: sum(weight * coord) / sum(weight)
+    centroid_h = (masks * grid_h.view(1, 1, -1)).sum(dim=-1) / (masks.sum(dim=-1) + 1e-8)
+    centroid_w = (masks * grid_w.view(1, 1, -1)).sum(dim=-1) / (masks.sum(dim=-1) + 1e-8)
+    
+    centroids = torch.stack([centroid_h, centroid_w], dim=-1)  # [B, n_slots, 2]
+    
+    if normalize:
+        centroids[..., 0] /= (patch_h - 1 + 1e-8)
+        centroids[..., 1] /= (patch_w - 1 + 1e-8)
+    
+    return centroids
+
+
 def greedy_slot_initialization(
     features: torch.Tensor,
     n_slots: int,
@@ -617,7 +653,392 @@ class GreedyFeatureInit(nn.Module):
         # Apply learnable refinement: slots = slots + refine(slots)
         if self.refine_linear:
             slots = slots + self.refine(slots)
-        
+
+        return slots
+
+
+def _gaussian_kernel_1d(sigma: float, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Build a 1D Gaussian kernel with odd support sized to ~3*sigma."""
+    # Minimum radius 1 so the kernel is a proper filter; scale with sigma otherwise.
+    radius = max(1, int(round(3.0 * float(sigma))))
+    coords = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+    kernel = torch.exp(-(coords ** 2) / (2.0 * float(sigma) ** 2))
+    kernel = kernel / kernel.sum()
+    return kernel
+
+
+def _gaussian_blur_2d(depth: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Separable Gaussian blur on a [B, 1, H, W] tensor. Returns the same shape."""
+    if sigma <= 0:
+        return depth
+    kernel_1d = _gaussian_kernel_1d(sigma, depth.device, depth.dtype)
+    radius = kernel_1d.shape[0] // 2
+    kernel_h = kernel_1d.view(1, 1, 1, -1)
+    kernel_w = kernel_1d.view(1, 1, -1, 1)
+    blurred = F.conv2d(depth, kernel_h, padding=(0, radius))
+    blurred = F.conv2d(blurred, kernel_w, padding=(radius, 0))
+    return blurred
+
+
+def compute_depth_edge_score(
+    depth: torch.Tensor,
+    n_patches: int,
+    sigma: float = 1.0,
+) -> torch.Tensor:
+    """Project Sobel magnitude of depth onto the patch grid.
+
+    Args:
+        depth: [B, H, W] depth map (detaching/selection handled by caller).
+        n_patches: Total number of patches; assumed to form a square grid
+            of size ``sqrt(n_patches) x sqrt(n_patches)``.
+        sigma: Sigma for Gaussian pre-smoothing of depth (<= 0 disables).
+
+    Returns:
+        depth_edge_patch: [B, N] depth-edge magnitudes averaged per patch.
+    """
+    B, H, W = depth.shape
+    device = depth.device
+    dtype = depth.dtype
+
+    depth_4d = depth.unsqueeze(1)  # [B, 1, H, W]
+
+    # Optional Gaussian pre-smoothing to suppress noise before Sobel.
+    depth_blur = _gaussian_blur_2d(depth_4d, sigma)
+
+    # Sobel gradients: simple fixed 3x3 kernels applied without learned params.
+    sobel_x = torch.tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+        device=device, dtype=dtype,
+    ).view(1, 1, 3, 3)
+    sobel_y = torch.tensor(
+        [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
+        device=device, dtype=dtype,
+    ).view(1, 1, 3, 3)
+
+    grad_x = F.conv2d(depth_blur, sobel_x, padding=1)
+    grad_y = F.conv2d(depth_blur, sobel_y, padding=1)
+    edge_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-12)  # [B, 1, H, W]
+
+    # Pool edge magnitude down to the patch grid via adaptive average pooling.
+    patch_hw = int(round(n_patches ** 0.5))
+    if patch_hw * patch_hw != n_patches:
+        # Non-square patch grids aren't expected for this path; fall back to
+        # a best-effort adaptive pool using sqrt rounding.
+        patch_hw = max(1, patch_hw)
+    pooled = F.adaptive_avg_pool2d(edge_mag, output_size=(patch_hw, patch_hw))
+    depth_edge_patch = pooled.view(B, patch_hw * patch_hw)
+    return depth_edge_patch
+
+
+def greedy_slot_initialization_depth_edge(
+    features: torch.Tensor,
+    depth: torch.Tensor,
+    n_slots: int,
+    temperature: float = 0.1,
+    saliency_mode: str = "norm",
+    aggregate: bool = False,
+    aggregate_threshold: float = 0.0,
+    neighbor_radius: int = 1,
+    saliency_smoothing: int = 0,
+    selection_mode: str = "hard",
+    soft_topk: int = 5,
+    neighbor_avg_radius: int = 1,
+    saliency_alpha: float = 1.0,
+    spatial_suppression_radius: int = 0,
+    spatial_suppression_strength: float = 0.5,
+    lambda_depth_edge: float = 0.5,
+    depth_edge_sigma: float = 1.0,
+) -> torch.Tensor:
+    """Greedy slot initialization fused with depth-edge saliency.
+
+    Mirrors :func:`greedy_slot_initialization` but adds a detached depth-edge
+    term to the base saliency before greedy selection. ``depth`` must have the
+    same leading (batch * time) layout as ``features``.
+    """
+    # Video input [B, T, N, D] with matching depth [B, T, H, W].
+    if features.ndim == 4:
+        B, T, N, D = features.shape
+        features_flat = features.view(B * T, N, D)
+        if depth.ndim != 4:
+            raise ValueError(
+                f"Expected depth with ndim=4 for video features, got ndim={depth.ndim}"
+            )
+        depth_flat = depth.reshape(B * T, depth.shape[-2], depth.shape[-1])
+        slots = greedy_slot_initialization_depth_edge(
+            features_flat, depth_flat, n_slots, temperature, saliency_mode,
+            aggregate, aggregate_threshold, neighbor_radius, saliency_smoothing,
+            selection_mode, soft_topk, neighbor_avg_radius, saliency_alpha,
+            spatial_suppression_radius, spatial_suppression_strength,
+            lambda_depth_edge, depth_edge_sigma,
+        )
+        return slots.view(B, T, n_slots, D)
+
+    B, N, D = features.shape
+    device = features.device
+
+    features_norm = F.normalize(features, dim=-1)
+
+    # Base saliency is identical to ``greedy_slot_initialization`` for every
+    # supported mode. We reuse ``compute_saliency`` (which already implements
+    # most modes) and fall back to a norm-based saliency for any mode it does
+    # not cover, matching the behaviour of the base greedy routine.
+    try:
+        base_saliency = compute_saliency(
+            features, features_norm, n_slots, saliency_mode,
+            neighbor_radius=neighbor_radius,
+            saliency_alpha=saliency_alpha,
+            saliency_smoothing=0,  # smoothing applied after depth fusion below
+            temperature=temperature,
+        )
+    except Exception:
+        base_saliency = features.norm(dim=-1)
+
+    # Depth-edge saliency on patch grid (detached, no gradients flow into depth).
+    depth_detached = depth.detach().to(dtype=features.dtype)
+    depth_edge_patch = compute_depth_edge_score(
+        depth_detached, n_patches=N, sigma=depth_edge_sigma
+    )  # [B, N]
+
+    # L2-normalize depth edge score to [0, 1]. We follow the spec and use an
+    # L2-norm scaling: divide by the max L2-magnitude per sample, then clamp to
+    # [0, 1]. This keeps the scale comparable to the base saliency and makes
+    # ``lambda_depth_edge`` a dimensionless mixing weight.
+    edge_l2 = depth_edge_patch.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    depth_edge_score_normalized = (depth_edge_patch / edge_l2).clamp(0.0, 1.0)
+
+    saliency = base_saliency + lambda_depth_edge * depth_edge_score_normalized
+
+    if saliency_smoothing > 0:
+        patch_hw = int(N ** 0.5)
+        saliency_spatial = saliency.view(B, 1, patch_hw, patch_hw)
+        kernel_size = 2 * saliency_smoothing + 1
+        saliency = F.avg_pool2d(
+            saliency_spatial, kernel_size=kernel_size, stride=1,
+            padding=saliency_smoothing,
+        ).view(B, N)
+
+    # Greedy selection (identical to ``greedy_slot_initialization``).
+    slots = []
+    mask = torch.ones(B, N, device=device)
+    patch_hw = int(N ** 0.5)
+
+    for _ in range(n_slots):
+        masked_saliency = saliency * mask
+
+        if selection_mode == "soft":
+            topk_values, topk_indices = masked_saliency.topk(soft_topk, dim=-1)
+            topk_weights = F.softmax(topk_values / temperature, dim=-1)
+            topk_features = features.gather(1, topk_indices.unsqueeze(-1).expand(-1, -1, D))
+            slot = (topk_weights.unsqueeze(-1) * topk_features).sum(dim=1)
+            idx = topk_indices[:, 0]
+            selected = features[torch.arange(B, device=device), idx]
+        elif selection_mode == "neighbor_avg":
+            idx = masked_saliency.argmax(dim=-1)
+            selected = features[torch.arange(B, device=device), idx]
+            idx_h = idx // patch_hw
+            idx_w = idx % patch_hw
+            slot = _average_with_spatial_neighbors(
+                features, idx_h, idx_w, patch_hw, neighbor_avg_radius
+            )
+        elif selection_mode == "knn_refine":
+            idx = masked_saliency.argmax(dim=-1)
+            selected = features[torch.arange(B, device=device), idx]
+            selected_norm = F.normalize(selected, dim=-1).unsqueeze(1)
+            sim_to_selected = (features_norm * selected_norm).sum(dim=-1)
+            _, knn_indices = sim_to_selected.topk(soft_topk, dim=-1)
+            knn_features = features.gather(1, knn_indices.unsqueeze(-1).expand(-1, -1, D))
+            slot = knn_features.mean(dim=1)
+        elif selection_mode == "centroid":
+            idx = masked_saliency.argmax(dim=-1)
+            selected = features[torch.arange(B, device=device), idx]
+            selected_norm = F.normalize(selected, dim=-1).unsqueeze(1)
+            sim_to_selected = (features_norm * selected_norm).sum(dim=-1)
+            soft_weights = (sim_to_selected * mask).clamp(min=0)
+            soft_weights = soft_weights * (sim_to_selected > 0.5).float()
+            soft_weights = soft_weights / (soft_weights.sum(dim=-1, keepdim=True) + 1e-8)
+            slot = torch.einsum("bn,bnd->bd", soft_weights, features)
+        else:  # "hard"
+            idx = masked_saliency.argmax(dim=-1)
+            selected = features[torch.arange(B, device=device), idx]
+            slot = selected
+
+        if aggregate:
+            selected_norm = F.normalize(selected, dim=-1).unsqueeze(1)
+            similarity = (features_norm * selected_norm).sum(dim=-1)
+            agg_weights = (similarity * mask).clamp(min=0)
+            agg_weights = agg_weights * (similarity > aggregate_threshold).float()
+            agg_weights = agg_weights / (agg_weights.sum(dim=-1, keepdim=True) + 1e-8)
+            slot = torch.einsum("bn,bnd->bd", agg_weights, features)
+
+        slots.append(slot)
+
+        selected_norm = F.normalize(selected, dim=-1).unsqueeze(1)
+        similarity = (features_norm * selected_norm).sum(dim=-1)
+        feature_suppression = 1 - similarity.clamp(0, 1)
+
+        if spatial_suppression_radius > 0:
+            idx_h = idx // patch_hw
+            idx_w = idx % patch_hw
+            spatial_suppression = _compute_spatial_suppression(
+                idx_h, idx_w, patch_hw, spatial_suppression_radius, device
+            )
+            suppression = (1 - spatial_suppression_strength) * feature_suppression + \
+                          spatial_suppression_strength * spatial_suppression
+        else:
+            suppression = feature_suppression
+
+        mask = mask * suppression
+
+    return torch.stack(slots, dim=1)
+
+
+class DepthEdgeFeatureInit(GreedyFeatureInit):
+    """Depth-edge-aware greedy slot initializer (DepthEdgeSeeds, idea #018).
+
+    Extends :class:`GreedyFeatureInit` by fusing the base saliency with a
+    depth-discontinuity score derived from a Sobel filter on the depth map.
+    When ``lambda_depth_edge`` is 0, behaviour is identical to the parent
+    class by construction. `requires_depth = True` signals
+    `ObjectCentricModel.forward` to hard-raise if `inputs['depth']` is
+    missing, preventing silent depth-free fallback.
+
+    This module is pure inference-time: it adds no learned parameters beyond
+    those already present in :class:`GreedyFeatureInit`, and the incoming
+    depth tensor is detached before use.
+
+    Expected ``depth`` layout (pre-indexing by ``init_mode``):
+        - Video features ``[B, T, N, D]`` -> depth ``[B, T, H, W]``.
+        - Image features ``[B, N, D]`` -> depth ``[B, H, W]``.
+        - If depth has a channel dimension (``[B, 1, H, W]`` or
+          ``[B, T, 1, H, W]``) it is squeezed automatically.
+    """
+
+    requires_depth = True
+
+    def __init__(
+        self,
+        n_slots: int,
+        dim: int,
+        temperature: float = 0.1,
+        saliency_mode: str = "norm",
+        init_mode: str = "first_frame",
+        aggregate: bool = False,
+        aggregate_threshold: float = 0.5,
+        neighbor_radius: int = 1,
+        saliency_smoothing: int = 0,
+        selection_mode: str = "hard",
+        soft_topk: int = 5,
+        neighbor_avg_radius: int = 1,
+        saliency_alpha: float = 1.0,
+        spatial_suppression_radius: int = 0,
+        spatial_suppression_strength: float = 0.5,
+        refine_linear: bool = False,
+        refine_hidden: int = 0,
+        lambda_depth_edge: float = 0.5,
+        depth_edge_sigma: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(
+            n_slots=n_slots,
+            dim=dim,
+            temperature=temperature,
+            saliency_mode=saliency_mode,
+            init_mode=init_mode,
+            aggregate=aggregate,
+            aggregate_threshold=aggregate_threshold,
+            neighbor_radius=neighbor_radius,
+            saliency_smoothing=saliency_smoothing,
+            selection_mode=selection_mode,
+            soft_topk=soft_topk,
+            neighbor_avg_radius=neighbor_avg_radius,
+            saliency_alpha=saliency_alpha,
+            spatial_suppression_radius=spatial_suppression_radius,
+            spatial_suppression_strength=spatial_suppression_strength,
+            refine_linear=refine_linear,
+            refine_hidden=refine_hidden,
+            **kwargs,
+        )
+        self.lambda_depth_edge = float(lambda_depth_edge)
+        self.depth_edge_sigma = float(depth_edge_sigma)
+
+    @staticmethod
+    def _squeeze_channel_dim(depth: torch.Tensor, feat_ndim: int) -> torch.Tensor:
+        """Accept [B, 1, H, W] or [B, T, 1, H, W] by squeezing channel axis."""
+        # For video features ndim==4 we want depth ndim==4 ([B, T, H, W]);
+        # for image features ndim==3 we want depth ndim==3 ([B, H, W]).
+        expected_ndim = 4 if feat_ndim == 4 else 3
+        while depth.ndim > expected_ndim:
+            squeezed = False
+            for dim_idx in range(depth.ndim):
+                if depth.shape[dim_idx] == 1:
+                    depth = depth.squeeze(dim_idx)
+                    squeezed = True
+                    break
+            if not squeezed:
+                break
+        return depth
+
+    def forward(
+        self,
+        batch_size: int,
+        features: Optional[torch.Tensor] = None,
+        depth: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        if features is None:
+            return self.fallback.expand(batch_size, -1, -1)
+        if depth is None:
+            raise RuntimeError(
+                "DepthEdgeFeatureInit called with depth=None — this initializer "
+                "requires VGGT depth maps. Set `dataset.depth_cache_dir` and "
+                "include `depth` in pipeline `keys`."
+            )
+        if self.lambda_depth_edge == 0.0:
+            return super().forward(batch_size, features)
+
+        depth = self._squeeze_channel_dim(depth.detach(), features.ndim)
+
+        if features.ndim == 4:
+            # Video: [B, T, N, D] with depth [B, T, H, W].
+            if self.init_mode == "first_frame":
+                first_frame_feat = features[:, 0]
+                first_frame_depth = depth[:, 0] if depth.ndim == 4 else depth
+                slots = greedy_slot_initialization_depth_edge(
+                    first_frame_feat, first_frame_depth, self.n_slots,
+                    self.temperature, self.saliency_mode,
+                    self.aggregate, self.aggregate_threshold,
+                    self.neighbor_radius, self.saliency_smoothing,
+                    self.selection_mode, self.soft_topk, self.neighbor_avg_radius,
+                    self.saliency_alpha, self.spatial_suppression_radius,
+                    self.spatial_suppression_strength,
+                    self.lambda_depth_edge, self.depth_edge_sigma,
+                )
+            else:
+                slots = greedy_slot_initialization_depth_edge(
+                    features, depth, self.n_slots,
+                    self.temperature, self.saliency_mode,
+                    self.aggregate, self.aggregate_threshold,
+                    self.neighbor_radius, self.saliency_smoothing,
+                    self.selection_mode, self.soft_topk, self.neighbor_avg_radius,
+                    self.saliency_alpha, self.spatial_suppression_radius,
+                    self.spatial_suppression_strength,
+                    self.lambda_depth_edge, self.depth_edge_sigma,
+                )
+        else:
+            slots = greedy_slot_initialization_depth_edge(
+                features, depth, self.n_slots,
+                self.temperature, self.saliency_mode,
+                self.aggregate, self.aggregate_threshold,
+                self.neighbor_radius, self.saliency_smoothing,
+                self.selection_mode, self.soft_topk, self.neighbor_avg_radius,
+                self.saliency_alpha, self.spatial_suppression_radius,
+                self.spatial_suppression_strength,
+                self.lambda_depth_edge, self.depth_edge_sigma,
+            )
+
+        if self.refine_linear:
+            slots = slots + self.refine(slots)
+
         return slots
 
 

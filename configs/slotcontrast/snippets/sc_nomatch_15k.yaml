@@ -1,0 +1,6 @@
+# SC predictor (TransformerEncoder) bypassed via skip_predictor=true.
+# Tests the "matching redundant under DINOv2" thesis on the SC architecture
+# (in addition to the existing GCv1 + Hungarian test in Wave 6).
+model:
+  latent_processor:
+    skip_predictor: true

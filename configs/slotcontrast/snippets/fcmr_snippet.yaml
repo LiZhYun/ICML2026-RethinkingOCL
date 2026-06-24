@@ -1,0 +1,112 @@
+# Flow-Consistency Mask Regularizer (idea T3-02, FCMR).
+#
+# WHAT
+#   Training-side loss that penalizes decoder masks whose geometry does NOT
+#   transport cleanly under the pre-computed forward optical flow:
+#
+#       L = (1 / (T-1)) * sum_t || warp(Mask_t, flow_{t->t+1}) * visibility
+#                                  - Mask_{t+1}^{matched} ||^2
+#
+#   * `warp` uses `torch.nn.functional.grid_sample` with
+#     `align_corners=False`, `mode='bilinear'`, `padding_mode='zeros'`.
+#   * The flow is resampled to the mask grid (37x37 for DINOv2 / 518x518 input)
+#     and rescaled to that resolution's pixel units. Flow is detached (frozen).
+#   * `visibility` is an in-frame indicator: destination pixels whose source
+#     coordinate falls outside the normalized `[-1, 1]^2` sampling domain are
+#     dropped from the loss (they carry no signal after zero-padding).
+#   * Hungarian match indices, when present, reorder `Mask_t`'s slot axis into
+#     `Mask_{t+1}`'s slot order. When absent (or None per step) the loss
+#     assumes upstream alignment (HungarianPredictor already stores
+#     `reordered_slots.detach()` in `_prev_slots`, so `decoder.masks[:, t, k]`
+#     and `decoder.masks[:, t+1, k]` already share identity `k`).
+#
+#   No inference-time dependency: flow is used only to shape the training
+#   objective. At validation / test time the flow branch is never queried.
+#
+# WHEN
+#   * Training runs on YT-VIS 2021 with RAFT `forward_flow` cache available
+#     (precompute via `scripts/precompute_raft_flow_ytvis.py`).
+#   * Training runs on MOVi-D with Kubric GT `forward_flow` shards available
+#     (see `data/save_movi.py` which already writes `forward_flow` per-video).
+#
+# HOW TO ENABLE
+#   1) Make sure the data loader streams forward flow into the batch under
+#      key `forward_flow` (or a generic `flow`; either is picked up by
+#      `slotcontrast/models.py::forward` around line 316).
+#
+#      MOVi-D: `data/save_movi.py` already writes `forward_flow` shards.
+#      Add the key to the pipeline so it reaches the batch:
+#
+#        dataset:
+#          train_keys: [video, forward_flow]        # <-- required
+#          train_pipeline:
+#            keys: [video, forward_flow]            # split per chunk
+#
+#      YT-VIS 2021: flow is NOT yet wired into the webdataset pipeline as of
+#      this writing (the RAFT precompute script exists at
+#      `scripts/precompute_raft_flow_ytvis.py`, and the per-video cache files
+#      `{vid_id}_forward_flow.npy` land in a flat directory). A datamodule
+#      patch is required to attach the cached flow to the sample dict — no
+#      fallback path is provided by the loss. Without the patch this loss
+#      raises `ValueError("FlowConsistencyMaskLoss requires forward_flow...")`
+#      at the first step (by design — no silent no-op).
+#
+#   2) Add the loss + weight to your config:
+#
+#        model:
+#          losses:
+#            # ... existing featrec, timesim, etc ...
+#            loss_fcmr:
+#              name: FlowConsistencyMaskLoss
+#              pred_key: decoder.masks   # [B, T, K, P] patch masks from the
+#                                        # SlotMixerDecoder / MLPDecoder path.
+#                                        # Use decoder.masks — NOT
+#                                        # decoder_masks_hard (which is inside
+#                                        # `aux_forward` and has no gradient).
+#          loss_weights:
+#            # ... existing weights ...
+#            loss_fcmr: 0.3             # pilot sweep over {0.1, 0.3, 1.0}
+#
+#      The loss is shape-agnostic: it accepts `[B, T, K, P]` (patch grid,
+#      reshaped to square HxW internally) or `[B, T, K, H, W]` (spatial
+#      decoders). Non-square P raises.
+#
+# FLOW SHAPE CONTRACT
+#   forward_flow: `[B, T-1, H_f, W_f, 2]` preferred; `[B, T, H_f, W_f, 2]`
+#   (padded; last frame unused) also accepted. Last axis ordering is
+#   `(dx, dy)` in pixel units at the flow's native resolution `(H_f, W_f)`.
+#   The loss resamples flow to the mask's `(H, W)` via bilinear interp and
+#   rescales the pixel-unit values by `(W/W_f, H/H_f)`.
+#
+# WHAT GETS LIFTED TO outputs[...]
+#   `slotcontrast/models.py::forward` lifts two tensors to the top-level
+#   outputs dict so `compute_loss`'s `aux_keys` dispatcher (see
+#   `models.py:566-573`) can forward them as kwargs:
+#     outputs["forward_flow"]             <- from inputs["forward_flow"]
+#     outputs["hungarian_match_indices"]  <- from processor_output[...]
+#   Mirror of the existing `pre_drop_slots` / `drop_mask` lift pattern for
+#   SlotDropRecoverLoss (models.py:351-357).
+#
+# SAFETY (no-fallback contract)
+#   * `forward_flow` absent from batch    -> loss raises ValueError at step 1.
+#   * Non-square patch grid               -> loss raises ValueError.
+#   * `forward_flow` time dim < T-1       -> loss raises ValueError.
+#   * Mismatched batch size               -> loss raises ValueError.
+#   * T == 1 (single-frame video)         -> loss returns zero (no pair).
+#   * hungarian_match_indices missing     -> loss assumes slot-axis already
+#                                            aligned by upstream predictor
+#                                            (standard HungarianPredictor
+#                                            path); no reorder applied.
+#
+# PILOT PROTOCOL (from idea-stage/TRACK3_REID_IDEAS.md)
+#   * Single-seed 40K MOVi-D with weight in {0.1, 0.3, 1.0}.
+#   * Kill if best weight gives ΔFG-ARI < +0.005 over GCv1 AND mBO does
+#     not lift by +0.005.
+#   * Early visual check at 10K: mask boundaries should not fatten
+#     (over-smoothing is the known failure mode of flow-conditioned
+#     supervision at fast-motion / small-object boundaries).
+
+loss_fcmr:
+  enabled: false
+  weight: 0.3              # pilot sweep over {0.1, 0.3, 1.0}
+  pred_key: decoder.masks  # decoder soft masks, [B, T, K, P] or [B, T, K, H, W]

@@ -1,0 +1,50 @@
+# Phase-A T1.1-extra (Round-32 FIX-4): YT-VIS × SC × Full-FT × encoder lr=1e-5.
+# T1.1 already established that fullft fails at the LoRA-matched encoder lr (8e-5)
+# on YT-VIS. Round-32 reviewer flagged that the "YT-VIS fullft fails" claim is
+# only matched-LR, not LR-tuned. This snippet drops encoder lr to 1e-5 — the
+# value where fullft RECOVERED on MOVi-D — to test whether the same recovery
+# happens on YT-VIS or whether YT-VIS is genuinely LR-robustly bad.
+# All other settings identical to ytvis_sc_fullft_fix.yaml.
+model:
+  encoder:
+    backbone:
+      frozen: false
+      lora_config: null
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+optimizer:
+  param_groups:
+  - modules: encoder
+    lr: 1.0e-05
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules:
+    - initializer
+    - processor
+    - decoder
+    lr: 0.0008
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

@@ -33,6 +33,18 @@ class ModelConfig:
     temporal_cross_window: int = 0  # 0=same-frame cycle, >0=temporal cross-consistency
     temporal_cross_mode: str = "both"  # "both"=[-win,+win], "backward"=[-win,0], "forward"=[0,+win]
     use_backbone_features: bool = False  # Use raw backbone features for greedy init
+    # Round-24 fix #1: route greedy/saliency slot init through frozen target_encoder
+    # backbone features (immune to LoRA / output_transform drift). "encoder" (default)
+    # preserves legacy behaviour; "target_encoder" requires `target_encoder` configured.
+    initializer_feature_source: str = "encoder"
+    # Round-24 fix #3: snapshot encoder.output_transform at backbone_unfreeze_step
+    # and expose `target_encoder.projected_features` for an anchor MSELoss.
+    use_projected_anchor: bool = False
+    # GSRS (§3.1(a), §3.12, §3.13). Optional; absent/None = standard GCv1 path.
+    open_set_head: Optional[ModuleConfig] = None  # e.g. `name: networks.OpenSetIdentityHead`
+    gsrs_renderer_ckpt: Optional[str] = None      # path to frozen renderer; Part A writes this
+    teacher_snapshot_step: int = 0                # 0 = never snapshot; >0 = snapshot at this step
+    ema_teacher: Optional[Dict[str, Any]] = None  # TubeGram EMA: {decay: 0.999, warmup_steps: 5000}
 
 
 @dataclass
@@ -49,6 +61,7 @@ class Config:
     experiment_group: Optional[str] = None
     seed: Optional[int] = None
     checkpoint_every_n_steps: int = 1000
+    disable_checkpointing: bool = False
 
 
 def load_config(path: pathlib.Path, overrides: Optional[List[str]] = None) -> OmegaConf:

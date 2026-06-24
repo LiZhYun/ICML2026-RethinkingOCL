@@ -1,0 +1,245 @@
+"""
+Aggregate Phase A + Phase B run dirs into a markdown summary.
+
+Phase A:
+  /scratch/elec/t41020_egovla/slotcontrast_phase_a/v1_100k/slotcontrast_phase_a/
+    T1.1 YT-VIS fullft fix:        phaseA_ytvis_{sc,gcv1_pf}_fullft_fix_s*
+    T1.2 fullft LR sweep MOVi-D:   phaseA_movid_{sc,gcv1_pf}_fullft_lr{1e-5,1e-4,4e-4}_s*
+    T1.3 DINOv3 native 224:        phaseA_ytvis_sc_dinov3_native224_{learned,identity}_s*
+
+Phase B:
+  /scratch/elec/t41020_egovla/slotcontrast_phase_b/v1_100k/slotcontrast_phase_b/
+    T3.1 BitFit:    phaseB_{movic,movid,movie,ytvis}_{sc,gcv1_pf}_bitfit_s*
+    T3.2 last-k:    phaseB_movid_{sc,gcv1_pf}_lastk{2,4}_s*
+
+Output:
+  /scratch/elec/t41020_egovla/phase_ab_summary.md
+  /scratch/elec/t41020_egovla/phase_ab_per_cell.csv
+"""
+
+from __future__ import annotations
+import csv
+import math
+import re
+import statistics
+from collections import defaultdict
+from pathlib import Path
+
+PHASE_A = Path("/scratch/elec/t41020_egovla/slotcontrast_phase_a/v1_100k/slotcontrast_phase_a")
+PHASE_B = Path("/scratch/elec/t41020_egovla/slotcontrast_phase_b/v1_100k/slotcontrast_phase_b")
+OUT_MD = Path("/scratch/elec/t41020_egovla/phase_ab_summary.md")
+OUT_CSV = Path("/scratch/elec/t41020_egovla/phase_ab_per_cell.csv")
+
+METRIC_KEYS = ("val/ari", "val/fg_ari", "val/mbo", "val/image_ari", "val/image_mbo")
+
+
+def parse_final_val(csv_path: Path) -> tuple[int, dict[str, float]] | None:
+    """Return (highest_val_step, last_val_row_metrics) or None if no val row."""
+    last_val = None
+    last_step = -1
+    try:
+        with csv_path.open() as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                ari = row.get("val/ari", "").strip()
+                if not ari:
+                    continue
+                step_str = row.get("step", "").strip()
+                step = int(step_str) if step_str else -1
+                if step >= last_step:
+                    last_step = step
+                    last_val = row
+    except (OSError, ValueError):
+        return None
+    if last_val is None:
+        return None
+    parsed = {}
+    for k in METRIC_KEYS:
+        v = last_val.get(k, "").strip()
+        parsed[k] = float(v) if v else float("nan")
+    return last_step, parsed
+
+
+# (dataset, arch, variant) -> seed -> (step, metrics)
+def collect(root: Path, name_re: re.Pattern) -> dict[tuple, dict[int, tuple[int, dict]]]:
+    best: dict[tuple, dict[int, tuple[int, dict]]] = defaultdict(dict)
+    if not root.exists():
+        return best
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        m = name_re.match(d.name)
+        if not m:
+            continue
+        cell_keys = m.groupdict()
+        seed = int(cell_keys.pop("seed"))
+        cell = tuple(cell_keys.values())
+        csv_path = d / "metrics" / "version_0" / "metrics.csv"
+        if not csv_path.exists():
+            continue
+        res = parse_final_val(csv_path)
+        if res is None:
+            continue
+        step, vals = res
+        prev = best[cell].get(seed)
+        if prev is None or step > prev[0]:
+            best[cell][seed] = (step, vals)
+    return best
+
+
+T11_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_"
+    r"phaseA_ytvis_(?P<arch>sc|gcv1_pf)_fullft_fix_s(?P<seed>\d+)$"
+)
+T12_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_"
+    r"phaseA_movid_(?P<arch>sc|gcv1_pf)_fullft_lr(?P<lr>1e-5|1e-4|4e-4)_s(?P<seed>\d+)$"
+)
+T13_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_"
+    r"phaseA_ytvis_sc_dinov3_native224_(?P<variant>learned|identity)_s(?P<seed>\d+)$"
+)
+T31_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_"
+    r"phaseB_(?P<dataset>movic|movid|movie|ytvis)_(?P<arch>sc|gcv1_pf)_bitfit_s(?P<seed>\d+)$"
+)
+T32_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_"
+    r"phaseB_movid_(?P<arch>sc|gcv1_pf)_lastk(?P<k>2|4)_s(?P<seed>\d+)$"
+)
+
+
+def fmt(vals: list[float]) -> str:
+    vals = [v for v in vals if v == v]
+    if not vals:
+        return "—"
+    pct = [v * 100 for v in vals]
+    m = statistics.mean(pct)
+    s = statistics.stdev(pct) if len(pct) >= 2 else 0.0
+    return f"{m:5.2f} ± {s:4.2f}" if s > 0 else f"{m:5.2f}"
+
+
+def main() -> None:
+    t11 = collect(PHASE_A, T11_RE)
+    t12 = collect(PHASE_A, T12_RE)
+    t13 = collect(PHASE_A, T13_RE)
+    t31 = collect(PHASE_B, T31_RE)
+    t32 = collect(PHASE_B, T32_RE)
+
+    print(f"T1.1 cells: {len(t11)}; total seeds: {sum(len(s) for s in t11.values())}")
+    print(f"T1.2 cells: {len(t12)}; total seeds: {sum(len(s) for s in t12.values())}")
+    print(f"T1.3 cells: {len(t13)}; total seeds: {sum(len(s) for s in t13.values())}")
+    print(f"T3.1 cells: {len(t31)}; total seeds: {sum(len(s) for s in t31.values())}")
+    print(f"T3.2 cells: {len(t32)}; total seeds: {sum(len(s) for s in t32.values())}")
+
+    lines: list[str] = []
+    lines.append("# Phase A + Phase B grids — aggregated results\n")
+    lines.append("Generated by scripts/aggregate_phase_ab.py.\n"
+                 "All cells n=5 seeds at 100k steps unless noted.\n")
+
+    # T1.1
+    lines.append("\n## T1.1 — YT-VIS fullft with LoRA-matched LR (8e-5 / 8e-4)\n")
+    lines.append("Reruns the YT-VIS fullft variant of the v2 grid with the LR\n"
+                 "actually matched to YT-VIS LoRA-rescue. The v2 cells used the\n"
+                 "MOVi-default 4e-5 / 4e-4 LRs, which were half the YT-VIS LoRA LRs.\n")
+    lines.append("| Arch | n | ARI | FG-ARI | mBO | img-ARI | img-mBO |")
+    lines.append("|---|---:|---|---|---|---|---|")
+    for arch in ("sc", "gcv1_pf"):
+        seeds = t11.get((arch,), {})
+        n = len(seeds)
+        seed_vals = list(seeds.values())
+        cells = [fmt([v[k] for _, v in seed_vals]) for k in METRIC_KEYS]
+        lines.append(f"| {arch} | {n} | " + " | ".join(cells) + " |")
+
+    # T1.2
+    lines.append("\n## T1.2 — MOVi-D fullft encoder-LR sweep\n")
+    lines.append("v2 already covered encoder lr=4e-5 (the canonical fullft cell).\n"
+                 "This sweep adds 1e-5, 1e-4, and 4e-4 to defuse the 'LoRA wins\n"
+                 "because fullft was under-LR'd' attack.\n")
+    lines.append("| Arch | enc LR | n | ARI | FG-ARI | mBO | img-ARI | img-mBO |")
+    lines.append("|---|---|---:|---|---|---|---|---|")
+    for arch in ("sc", "gcv1_pf"):
+        for lr in ("1e-5", "1e-4", "4e-4"):
+            seeds = t12.get((arch, lr), {})
+            n = len(seeds)
+            seed_vals = list(seeds.values())
+            cells = [fmt([v[k] for _, v in seed_vals]) for k in METRIC_KEYS]
+            lines.append(f"| {arch} | {lr} | {n} | " + " | ".join(cells) + " |")
+
+    # T1.3
+    lines.append("\n## T1.3 — DINOv3 at native 224×224 input\n")
+    lines.append("Re-runs the cross-backbone DINOv3 cell at the backbone's pretrained\n"
+                 "input resolution (224 with 14×14=196 patches) to test the\n"
+                 "resolution-mismatch hypothesis for the DINOv3 one-large-slot collapse.\n")
+    lines.append("| Variant | n | ARI | FG-ARI | mBO | img-ARI | img-mBO |")
+    lines.append("|---|---:|---|---|---|---|---|")
+    for var in ("identity", "learned"):
+        seeds = t13.get((var,), {})
+        n = len(seeds)
+        seed_vals = list(seeds.values())
+        cells = [fmt([v[k] for _, v in seed_vals]) for k in METRIC_KEYS]
+        lines.append(f"| {var} | {n} | " + " | ".join(cells) + " |")
+
+    # T3.1
+    lines.append("\n## T3.1 — BitFit (bias-only fine-tuning) baseline\n")
+    lines.append("BitFit: only encoder biases are trainable; everything else frozen.\n"
+                 "Separates 'LoRA helps' from 'any parameter-efficient method helps'.\n")
+    for arch in ("sc", "gcv1_pf"):
+        lines.append(f"\n### {arch.upper()}\n")
+        lines.append("| Dataset | n | ARI | FG-ARI | mBO | img-ARI | img-mBO |")
+        lines.append("|---|---:|---|---|---|---|---|")
+        for ds in ("movic", "movid", "movie", "ytvis"):
+            seeds = t31.get((ds, arch), {})
+            n = len(seeds)
+            seed_vals = list(seeds.values())
+            cells = [fmt([v[k] for _, v in seed_vals]) for k in METRIC_KEYS]
+            lines.append(f"| {ds} | {n} | " + " | ".join(cells) + " |")
+
+    # T3.2
+    lines.append("\n## T3.2 — Partial-unfreeze (last-k blocks)\n")
+    lines.append("Unfreezes the last k transformer blocks + final LayerNorm; everything\n"
+                 "earlier frozen. Tests depth-restricted full-rank adaptation vs LoRA's\n"
+                 "depth-uniform rank-bounded adaptation.\n")
+    lines.append("| Arch | k | n | ARI | FG-ARI | mBO | img-ARI | img-mBO |")
+    lines.append("|---|---:|---:|---|---|---|---|---|")
+    for arch in ("sc", "gcv1_pf"):
+        for k in ("2", "4"):
+            seeds = t32.get((arch, k), {})
+            n = len(seeds)
+            seed_vals = list(seeds.values())
+            cells = [fmt([v[k] for _, v in seed_vals]) for k in METRIC_KEYS]
+            lines.append(f"| {arch} | {k} | {n} | " + " | ".join(cells) + " |")
+
+    OUT_MD.write_text("\n".join(lines) + "\n")
+    print(f"\nWrote: {OUT_MD}")
+    print("\n--- Preview (first 60 lines) ---")
+    print("\n".join(lines[:60]))
+
+    # Per-cell CSV (raw)
+    with OUT_CSV.open("w") as f:
+        w = csv.writer(f)
+        w.writerow(["task", "dataset_or_arch", "arch_or_variant", "extra",
+                    "n_seeds", "max_step",
+                    "ari_mean", "ari_std", "fg_ari_mean", "fg_ari_std",
+                    "mbo_mean", "mbo_std",
+                    "image_ari_mean", "image_ari_std",
+                    "image_mbo_mean", "image_mbo_std"])
+        for task, table in [("t11", t11), ("t12", t12), ("t13", t13),
+                            ("t31", t31), ("t32", t32)]:
+            for cell, seeds in table.items():
+                seed_vals = list(seeds.values())
+                n = len(seed_vals)
+                max_step = max((s for s, _ in seed_vals), default=-1)
+                row = [task, *list(cell) + [""] * (3 - len(cell)), n, max_step]
+                for k in METRIC_KEYS:
+                    vals = [v[k] for _, v in seed_vals if v[k] == v[k]]
+                    pct = [v * 100 for v in vals]
+                    mean = statistics.mean(pct) if pct else float("nan")
+                    std = statistics.stdev(pct) if len(pct) >= 2 else 0.0
+                    row += [f"{mean:.4f}" if mean == mean else "", f"{std:.4f}"]
+                w.writerow(row)
+    print(f"Wrote: {OUT_CSV}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,42 @@
+model:
+  latent_processor:
+    skip_predictor: false
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+  predictor:
+    dim: ${globals.SLOT_DIM}
+    max_slots: ${globals.NUM_SLOTS}
+    n_blocks: 1
+    n_heads: 4
+    name: networks.HungarianPredictor
+    pre_match: false
+    similarity: cosine
+    use_gated: false
+optimizer:
+  param_groups:
+  - include: lora_
+    lr: 4.0e-05
+    lr_scheduler:
+      decay_steps: 30000
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+    modules: encoder
+  - exclude: lora_
+    lr: 0.0004
+    lr_scheduler:
+      decay_steps: 30000
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+    modules: encoder
+  - lr: 0.0004
+    lr_scheduler:
+      decay_steps: 30000
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+    modules:
+    - initializer
+    - processor
+    - decoder
+trainer:
+  max_steps: 30000

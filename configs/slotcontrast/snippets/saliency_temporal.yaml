@@ -1,0 +1,18 @@
+# Round-24 Fix #2B: enable saliency-temporal-consistency loss for Claim 3
+# (GCv1 nomatch + LoRA > GCv1 matched). Requires flow in the data pipeline.
+#
+# To use this snippet on a MOVi-X dataset (Kubric ships forward_flow.npy):
+#   1. Stack on top of the GCv1 rescue config.
+#   2. Ensure `dataset.{train,val}_pipeline.keys` includes `forward_flow`.
+#   3. Optionally tune `loss_weights.loss_saliency_temporal` (default 0.1).
+#
+# For YT-VIS, also set `dataset.flow_cache_dir` to the RAFT precomputed
+# sidecar directory (datamodules.py docstring at line 143 explains layout).
+model:
+  losses:
+    loss_saliency_temporal:
+      name: SaliencyTemporalConsistencyLoss
+      pred_key: encoder.features
+      saliency_mode: norm
+loss_weights:
+  loss_saliency_temporal: 0.1

@@ -1,0 +1,24 @@
+# Round-32 fairness audit: SC + SoftIdent (NO straight-through) + fr=1.5.
+#
+# Codex MCP Round-32 missed-gap: "ST estimator not isolated from plain
+# SoftIdent on SC." Existing GCv1 has both ST and no-ST at fr=1.5; SC only
+# has the ST variant. To isolate the ST estimator contribution on SC, run
+# SoftIdent (no straight_through) + fr=1.5 on SC architecture, 4 datasets × n=3.
+#
+# Predictor params match softident_st_fr15.yaml except straight_through=false.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: false
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

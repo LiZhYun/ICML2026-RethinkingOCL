@@ -1,0 +1,20 @@
+# 30k frozen-baseline override (T2a frozen arm). Inherits optimizer.lr.
+trainer:
+  max_steps: 30000
+optimizer:
+  param_groups: null
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 30000
+model:
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+  target_encoder: null
+  target_encoder_input: null
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0

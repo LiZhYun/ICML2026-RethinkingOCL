@@ -1,0 +1,76 @@
+# Occlusion-difficulty curriculum sampler (idea #013, OcclCurr).
+#
+# WHAT
+#   Oversamples training chunks with long invisibility / re-entry gaps, ramping
+#   from easy (adjacent-frame) to hard (gap >= max_ell_target frames) linearly
+#   over the first `curriculum_steps` optimizer steps. No architecture change,
+#   no new loss — the sampler only filters the stream of chunks emitted by
+#   `split_to_chunks`.
+#
+# WHEN
+#   * Enable ONLY for Table B (supervised) or augmented Table A configs that
+#     include per-instance `segmentations` in the train stream. For vanilla
+#     Table A runs that stream only `video`, leave `enabled: false` — the
+#     sampler is a pass-through in that case anyway, but keeping it off avoids
+#     needless transform wiring.
+#
+# HOW TO ENABLE
+#   1) Ensure the train pipeline streams segmentations. In the dataset block:
+#        dataset:
+#          train_keys: [video, segmentations]        # <-- required for OcclCurr
+#          train_pipeline:
+#            keys: [video, segmentations]            # for split_to_chunks
+#            transforms:
+#              name: ytvis_train                     # or movi_train, etc.
+#              add_segmentations: true               # materialize YTVISToBinary
+#              num_classes: 32
+#              ...
+#              occl_curriculum:                      # <-- this snippet
+#                enabled: true                       # flip to true to activate
+#                curriculum_steps: 25000             # linear ramp length (steps)
+#                max_ell_target: 8                   # target hard-gap length
+#                seg_key: segmentations              # chunk-dict key for seg
+#                uniform_prob: 0.0                   # prob of uniform pass-through
+#                min_gap_floor: 0                    # threshold floor at step 0
+#
+#   2) Wire the sampler into the pipeline. Because the sampler operates on the
+#      stream of CHUNKS (post-`split_to_chunks`, pre-`map_dict`), attach it via
+#      `dataset.compose(sampler)` inside your pipeline build. Minimal example:
+#
+#        from slotcontrast.data.transforms import OcclusionCurriculumSampler
+#        sampler = OcclusionCurriculumSampler.from_config(
+#            cfg.dataset.train_pipeline.transforms.get("occl_curriculum"))
+#        # inside VideoPipeline.apply, after split_to_chunks:
+#        if sampler is not None:
+#            dataset = dataset.compose(sampler)
+#
+#      `from_config` returns None when `enabled: false` or the block is absent,
+#      so the hook is a cheap, always-safe one-liner.
+#
+#   3) (Optional, for exact step alignment) Publish the trainer's global_step
+#      into the environment so webdataset workers can read it. Add a Lightning
+#      callback:
+#
+#        import os
+#        class PublishGlobalStep(pl.Callback):
+#            def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+#                os.environ["SLOTCONTRAST_GLOBAL_STEP"] = str(trainer.global_step)
+#
+#      Without this callback, the sampler falls back to a per-worker monotonic
+#      counter (approximate but still produces a curriculum ramp).
+#
+# SAFETY
+#   * `enabled: false`             -> strict no-op (yields every chunk).
+#   * Chunks without `seg_key`     -> pass-through (no drop, no crash).
+#   * Unrecognized seg layout      -> pass-through (conservative).
+#   * YAML parse errors            -> `from_config` returns None.
+#   Vanilla Table A runs (keys=[video]) are unaffected even if this block is
+#   accidentally left with `enabled: true`.
+
+occl_curriculum:
+  enabled: false
+  curriculum_steps: 25000
+  max_ell_target: 8
+  seg_key: segmentations
+  uniform_prob: 0.0
+  min_gap_floor: 0

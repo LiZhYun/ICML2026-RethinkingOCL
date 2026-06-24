@@ -1,0 +1,25 @@
+# Round-27 codex prescription: predictor-only-control ablation.
+#
+# This is the CRITICAL counterfactual that kills the "is the predictor swap
+# doing anything beyond LoRA + featrec=1.5?" reviewer attack on the universal
+# plug-in claim. Holds the LoRA backbone training and featrec_weight=1.5
+# constant; only the predictor differs between this arm (HungarianPredictor)
+# and the ST+fr15 arm (SoftIdentityPredictor with straight_through=true).
+#
+# Same seeds (42, 1, 2), same dataset configs, same per_frame init mode, same
+# 15K-step schedule, same target_encoder featrec.
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.HungarianPredictor
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+    use_gated: false
+    similarity: cosine
+    pre_match: false
+    max_slots: ${globals.NUM_SLOTS}
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

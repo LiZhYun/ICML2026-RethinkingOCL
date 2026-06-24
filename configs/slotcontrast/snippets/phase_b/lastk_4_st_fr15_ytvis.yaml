@@ -1,0 +1,51 @@
+# Wave L (last-k breadth): YT-VIS partial-unfreeze last-4 ViT blocks + final norm.
+# Same ST-SoftIdent + featrec=1.5 rescue recipe as the MOVi-D last-4 cells,
+# but LRs scaled to the YT-VIS 2x regime (encoder 8e-5, non-encoder 8e-4) so the
+# unfrozen-block adaptation is apples-to-apples with the YT-VIS canonical rescue.
+# Arch-agnostic (GCv1 adds model.initializer.init_mode=per_frame at launch).
+model:
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+      adapt_mode: last_k_blocks
+      adapt_config:
+        k: 4
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+trainer:
+  max_steps: 100000
+optimizer:
+  param_groups:
+  - modules: encoder
+    lr: 8.0e-05
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules:
+    - initializer
+    - processor
+    - decoder
+    lr: 0.0008
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000

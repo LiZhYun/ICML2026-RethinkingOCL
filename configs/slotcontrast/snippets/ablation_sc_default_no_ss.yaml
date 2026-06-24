@@ -1,0 +1,7 @@
+# D1-light: SC + default predictor + LoRA + featrec=1.5 + NO slot-slot contrastive
+model:
+  latent_processor:
+    skip_predictor: false
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.0

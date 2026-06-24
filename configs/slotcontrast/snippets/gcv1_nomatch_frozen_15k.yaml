@@ -1,0 +1,25 @@
+# Wave 6 — GCv1 without matching, frozen arm.
+# Apply on top of any GCv1 rescue config. Removes LoRA + R2 + R3, AND
+# bypasses HungarianPredictor. This is the joint control: no temporal
+# alignment from rescue AND no matching to compensate. Expected to perform
+# poorly relative to rescue+nomatch if the rescue protocol substitutes for
+# matching.
+optimizer:
+  param_groups: null
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 15000
+model:
+  encoder:
+    backbone:
+      frozen: true
+      lora_config: null
+  target_encoder: null
+  target_encoder_input: null
+  ema_teacher:
+    decay: 0.0
+    backbone_unfreeze_step: 0
+    loss_ramp_steps: 0
+  latent_processor:
+    skip_predictor: true

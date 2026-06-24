@@ -10,6 +10,8 @@ from slotcontrast.modules.networks import build as build_network
 from slotcontrast.modules.utils import Resizer, SoftToHardMask
 from slotcontrast.modules.utils import build as build_utils
 from slotcontrast.modules.utils import build_module, build_torch_function, build_torch_module
+from slotcontrast.modules.amodal_particles import AmodalParticleProcessor
+from slotcontrast.modules.amodal_particles import build as build_amodal_particles
 from slotcontrast.modules.video import LatentProcessor, MapOverTime, ScanOverTime
 from slotcontrast.modules.video import build as build_video
 
@@ -30,6 +32,7 @@ __all__ = [
     "MapOverTime",
     "ScanOverTime",
     "LatentProcessor",
+    "AmodalParticleProcessor",
     "MemoryBank",
     "SlotMemoryEncoder",
     "Resizer",
@@ -51,4 +54,5 @@ BUILD_FNS_BY_MODULE_GROUP = {
     "torch": build_torch_function,
     "torch.nn": build_torch_module,
     "nn": build_torch_module,
+    "amodal_particles": build_amodal_particles,
 }

@@ -1,0 +1,18 @@
+# Round-29 codex prescription: SC predictor-isolated counterfactual.
+#
+# Holds SC architecture (FixedLearnedInit + SlotAttention corrector +
+# TransformerEncoder predictor) intact, applies LoRA + featrec=1.5 anchor
+# rescue. Counterfactual to SC + ST-SoftIdent + fr15 — same training recipe
+# but with the original SC predictor instead of the swap.
+#
+# Closes the symmetry with GCv1 LoRA-Hung+fr15 (which was the predictor-only
+# counterfactual on GCv1 architecture).
+#
+# Decision: if SC default-predictor + LoRA + fr15 ALSO achieves universal
+# (≥3/4 datasets), then ST-SoftIdent is incremental on SC; if it falls short
+# on at least one dataset where ST-SoftIdent passes, then ST is the necessary
+# universal lever on SC too (mirroring the GCv1 MOVi-C result).
+model:
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

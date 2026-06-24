@@ -1,0 +1,24 @@
+# Override snippet for T2d 5x LoRA-LR ratio. LoRA LR = 8e-5 (vs 4e-5 default = 10x).
+# Apply on top of movi_d_slotcontrast_rescue15k.yaml via --config_overrides_file.
+optimizer:
+  param_groups:
+    - modules: encoder
+      include: "lora_"
+      lr: 0.00008
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000
+    - modules: encoder
+      exclude: "lora_"
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000
+    - modules: [initializer, processor, decoder]
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 15000

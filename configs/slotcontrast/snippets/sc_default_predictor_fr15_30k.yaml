@@ -1,0 +1,17 @@
+# Round-32 fairness audit: SC default-predictor+fr15 at 30K (catch-up test).
+#
+# Counterpart to softident_st_fr15_30k.yaml. Tests if SC default
+# predictor catches up at 30K matched schedule on SC YT-VIS (codex F6).
+trainer:
+  max_steps: 30000
+optimizer:
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 30000
+model:
+  latent_processor:
+    skip_predictor: false
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

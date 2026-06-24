@@ -184,3 +184,7 @@ movi_inference/
 
 
 figs/
+
+# Keep README figures (the global *.png / *.jpg rules above would otherwise ignore them)
+!assets/
+!assets/*.png

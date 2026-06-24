@@ -1,0 +1,15 @@
+# Round-32 fairness audit: SC default-predictor + LoRA + featrec=1.5 at 20K.
+#
+# Closes F1 step-mismatch for the predictor counterfactual on SC YT-VIS.
+# Treatment (SC ST-SoftIdent+fr15) runs at mx=20000 / decay_steps=15000;
+# the SC default-predictor counterfactual must match exactly.
+#
+# Same as sc_default_predictor_fr15.yaml but extended to 20K.
+trainer:
+  max_steps: 20000
+model:
+  latent_processor:
+    skip_predictor: false
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5

@@ -213,6 +213,7 @@ def write_dataset(video_dir, out_dir, split, add_annotations=True, annotations_f
                         num_obj,
                     )
                 else:
+                    num_obj = 0
                     segmentations = np.zeros(
                         (length, int(vid["height"]), int(vid["width"]), 1), dtype=np.uint8
                     )
@@ -221,10 +222,29 @@ def write_dataset(video_dir, out_dir, split, add_annotations=True, annotations_f
                     segmentations = einops.rearrange(segmentations, "f h w c -> f c h w")
                     segmentations = segmentation_resize(segmentations).cpu().numpy()
                     segmentations = einops.rearrange(segmentations, "f c h w -> f h w c")
+
+                # Pad instance channel to fixed cap of 32 so all shards have a
+                # consistent shape for batched collation. Per-annotation binary
+                # masks are preserved as channels 0..num_obj-1; remaining channels
+                # are zero-filled. Compact local track IDs (1..num_obj) live in
+                # `track_ids.npy`, padded with 0 for the absent slots.
+                CAP = 32
+                cur_f, cur_h, cur_w, cur_n = segmentations.shape
+                if cur_n < CAP:
+                    pad = np.zeros((cur_f, cur_h, cur_w, CAP - cur_n), dtype=segmentations.dtype)
+                    segmentations = np.concatenate([segmentations, pad], axis=-1)
+                elif cur_n > CAP:
+                    # Truncate; large-K_video videos lose their tail tracks.
+                    # Logged via max_num_instances above; fixed cap is required for batched collate.
+                    segmentations = segmentations[..., :CAP]
+                track_ids = np.zeros((CAP,), dtype=np.int32)
+                kept = min(num_obj, CAP)
+                track_ids[:kept] = np.arange(1, kept + 1, dtype=np.int32)
                 sample = {
                     "__key__": str(vid_id),
                     "video.npy": video,
                     "segmentations.npy": segmentations,
+                    "track_ids.npy": track_ids,
                 }
                 if depths is not None:
                     sample["depths.npy"] = depths

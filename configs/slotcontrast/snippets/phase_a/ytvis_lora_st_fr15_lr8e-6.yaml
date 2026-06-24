@@ -1,0 +1,48 @@
+# Wave R (LR-robustness breadth): YT-VIS × LoRA-rescue (ST-SoftIdent + featrec=1.5)
+# × encoder LoRA lr=8e-6 (0.1× the YT-VIS canonical 8e-5).
+#
+# YT-VIS canonical LoRA LR is 8e-5 (2× the MOVi 4e-5), tracking its 2× base LR
+# (8e-4 vs 4e-4). To keep the LR-robustness sweep apples-to-apples with the
+# YT-VIS canonical `st` cell, every non-swept LR matches the YT-VIS canonical:
+# encoder-non-LoRA = 8e-4, non-encoder = 8e-4. Only the LoRA group LR is swept.
+# Arch-agnostic (GCv1 adds model.initializer.init_mode=per_frame at launch).
+model:
+  latent_processor:
+    skip_predictor: false
+  predictor:
+    name: networks.SoftIdentityPredictor
+    dim: ${globals.SLOT_DIM}
+    sinkhorn_iters: 5
+    sinkhorn_tau: 0.1
+    cosine_weight: 1.0
+    use_flow_iou: false
+    flow_iou_weight: 0.0
+    use_centroid_dist: false
+    straight_through: true
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+optimizer:
+  param_groups:
+  - modules: encoder
+    include: "lora_"
+    lr: 8.0e-06
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: encoder
+    exclude: "lora_"
+    lr: 0.0008
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: [initializer, processor, decoder]
+    lr: 0.0008
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

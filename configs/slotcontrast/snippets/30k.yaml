@@ -1,0 +1,25 @@
+# Override snippet for T2a 30k convergence: extend max_steps + decay_steps to 30k.
+trainer:
+  max_steps: 30000
+optimizer:
+  param_groups:
+    - modules: encoder
+      include: "lora_"
+      lr: 0.00004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 30000
+    - modules: encoder
+      exclude: "lora_"
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 30000
+    - modules: [initializer, processor, decoder]
+      lr: 0.0004
+      lr_scheduler:
+        name: exp_decay_with_warmup
+        warmup_steps: 2500
+        decay_steps: 30000

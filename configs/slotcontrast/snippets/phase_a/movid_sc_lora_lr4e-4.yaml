@@ -1,0 +1,29 @@
+# Phase-A Round-33 FIX-12: MOVi-D × SC × LoRA-rescue × encoder LoRA lr=4e-4 (10× higher).
+# Tests LoRA's LR-robustness at the HIGH end of the LR range — the same LR
+# where v2-fullft collapses to ARI ~3-5. If LoRA still works here, the
+# "LR-robust" claim is empirically supported. Canonical LoRA encoder lr is 4e-5.
+# All other settings identical to movi_d_slotcontrast_rescue15k.yaml.
+optimizer:
+  param_groups:
+  - modules: encoder
+    include: "lora_"
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: encoder
+    exclude: "lora_"
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: [initializer, processor, decoder]
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+trainer:
+  max_steps: 100000

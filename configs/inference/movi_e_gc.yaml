@@ -1,4 +1,4 @@
-experiment_group: icml26_ocl_rethinking
+experiment_group: video-ocl
 experiment_name: movi_e
 
 globals:
@@ -98,10 +98,9 @@ model:
     # 3D Fourier positional embedding (optional - requires depth data)
     use_pos_embed: false
     pos_embed:
-      name: utils.FourierPositionEmbed3D
+      name: utils.LearnedPositionEmbed # CoordinatePositionEmbed RotaryPositionEmbed
       dim: ${globals.FEAT_DIM}
-      patch_size: 14
-      num_bands: 64
+      n_patches: ${globals.NUM_PATCHES}
     output_transform:
       name: networks.two_layer_mlp
       inp_dim: ${globals.FEAT_DIM}

@@ -1,0 +1,12 @@
+# Wave 9: representation stress control. Replace DINOv2-Base (768-dim, 86M params)
+# with DINOv2-Small (384-dim, 22M params) — same self-supervised paradigm but
+# weaker features. Tests whether matching becomes nontrivial when representation
+# quality drops. Codex Round 19 #2 ask: "show identity_ratio drops and/or
+# no-match hurts when features are weaker".
+globals:
+  DINO_MODEL: vit_small_patch14_dinov2.lvd142m
+  FEAT_DIM: 384
+model:
+  encoder:
+    backbone:
+      model: ${globals.DINO_MODEL}

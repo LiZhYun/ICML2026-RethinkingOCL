@@ -1,0 +1,31 @@
+model:
+  loss_weights:
+    loss_featrec: 1.5
+    loss_ss: 0.5
+trainer:
+  max_steps: 100000
+optimizer:
+  param_groups:
+  - modules: encoder
+    include: lora_
+    lr: 4.0e-05
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules: encoder
+    exclude: lora_
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
+  - modules:
+    - initializer
+    - processor
+    - decoder
+    lr: 0.0004
+    lr_scheduler:
+      name: exp_decay_with_warmup
+      warmup_steps: 2500
+      decay_steps: 100000
