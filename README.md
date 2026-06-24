@@ -13,7 +13,7 @@ and the <b>learned temporal predictor</b> — across two model families and four
 <img src="https://img.shields.io/badge/python-3.10-3776ab.svg" alt="Python 3.10">
 </p>
 
-> **📢 One codebase, two papers.** This repository accompanies our **ICML 2026** paper
+> This repository accompanies our **ICML 2026** paper
 > *Rethinking Temporal Consistency in Video Object-Centric Learning: From Prediction to Correspondence*
 > (the **Grounded Correspondence** method, [arXiv:2605.03650](https://arxiv.org/abs/2605.03650)) **and** its
 > **IEEE TPAMI** journal extension *Do We Really Need the Default Recipe for Video Object-Centric Learning?*.
